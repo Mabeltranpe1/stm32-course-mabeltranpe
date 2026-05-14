@@ -18,12 +18,51 @@
 
 #include <stdint.h>
 
+uint8_t a=0.0;
+uint16_t b=0.0;
+uint32_t c=0.0
+
+uint16_t ummy_16bit_dec = 0;
+uint16_t dummy_16bit_hex = 0;
+uint16_t dummy_16bit_bin = 0;
+
+uint8_t overflow= 0;
+
+
 #if !defined(__SOFT_FP__) && defined(__ARM_FP)
   #warning "FPU is not initialized, but the project is compiling for an FPU. Please initialize the FPU before use."
 #endif
 
+
+
 int main(void)
 {
+	a=123;
+	b=498;
+	c=3242;
+
+	dummy_16bit_dec = 32;
+	dummy_16bit_hex = 0x20;
+	dummy_16bit_bin = 0b100000;
+
+
+	dummy_16bit_bin = dummy_16bit_bin << 3;
+	dummy_16bit_bin = dummy_16bit_bin >> 3;
+
+	a = 255;
+	b = 255;
+	c = 255;
+
+	 overflow = a + 1;
+	 overflow = overflow + 1;
+
+	 overflow = 735;
+	 overflow = 0;
+
+	 for(unit16_t counter = 0; counter < 735; counter++){
+		 overflow++;
+	 }
+
     /* Loop forever */
 	while(1){
 
