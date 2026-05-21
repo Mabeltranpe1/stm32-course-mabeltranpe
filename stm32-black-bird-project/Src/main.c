@@ -17,56 +17,65 @@
  */
 
 #include <stdint.h>
-
-uint8_t a=0.0;
-uint16_t b=0.0;
-uint32_t c=0.0
-
-uint16_t ummy_16bit_dec = 0;
-uint16_t dummy_16bit_hex = 0;
-uint16_t dummy_16bit_bin = 0;
-
-uint8_t overflow= 0;
-
-
-#if !defined(__SOFT_FP__) && defined(__ARM_FP)
-  #warning "FPU is not initialized, but the project is compiling for an FPU. Please initialize the FPU before use."
-#endif
+#include <stm32f4xx.h>
+/*definición de variables del sistema */
+uint8_t a = 0;
+uint16_t b = 0;
+uint32_t c = 0;
+uint16_t s_dec = 0;
+uint16_t s_hex = 0;
+uint16_t s_bin = 0;
+uint8_t s_demo = 0;
 
 
+//#if !defined(__SOFT_FP__) && defined(__ARM_FP)
+//  #warning "FPU is not initialized, but the project is compiling for an FPU. Please initialize the FPU before use."
+//#endif
 
 int main(void)
 {
-	a=123;
-	b=498;
-	c=3242;
+	a = 255;
+	b = 245;
+	c = 222;
+	s_dec = 32;
+	s_hex = 0x20;
+	s_bin = 0b100000;
 
-	dummy_16bit_dec = 32;
-	dummy_16bit_hex = 0x20;
-	dummy_16bit_bin = 0b100000;
-
-
-	dummy_16bit_bin = dummy_16bit_bin << 3;
-	dummy_16bit_bin = dummy_16bit_bin >> 3;
+	s_bin=s_bin << 3; // predicción 0b1000000000 =556
+	s_bin=s_bin >> 3; //predicción 0b100 = 4
+	/* exponeindo  el caso overflow*/
 
 	a = 255;
 	b = 255;
 	c = 255;
 
-	 overflow = a + 1;
-	 overflow = overflow + 1;
+	s_demo = a + 1; //por predicción se desborda y deberia dar 0, debemos prestar atención al tamaño de nuestras variables, por que el sistema se puede desbordar
+	s_demo = s_demo + 1;
+	s_demo= 735;
+	s_demo= 0;
+	for(uint8_t counter = 0; counter < 735; counter++){
+		s_demo++;
+	}
 
-	 overflow = 735;
-	 overflow = 0;
+	//RCC->AHB1ENR |=(1<<0);
+	RCC->AHB1ENR |=RCC_AHB1ENR_GPIOAEN;
 
-	 for(unit16_t counter = 0; counter < 735; counter++){
-		 overflow++;
-	 }
+	GPIOA->MODER |= GPIO_MODER_MODE0_1;
+
+	GPIOA->MODER |= (0b01 << GPIO_MODER_MODE5_Pos);
+	//inicializacion de push pull
+	GPIOA->OTYPER &= ~(GPIO_OTYPER_OT5);
+	//posicion de los datos que quiero negar
+	GPIOA->OSPEEDR &= ~(0b11 <<GPIO_OSPEEDER_OSPEEDR5_Pos);
+	//Velocidad media
+	GPIOA->OSPEEDR |= (0b10 <<GPIO_OSPEEDER_OSPEEDR5_Pos);
+	//Escribir un 1 en la posicion 5
+	GPIOA->ODR |= (GPIO_ODR_OD5)
+
+
 
     /* Loop forever */
 	while(1){
 
 	}
-
-	return 0;
 }
