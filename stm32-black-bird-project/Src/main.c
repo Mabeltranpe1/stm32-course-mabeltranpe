@@ -19,45 +19,20 @@
 #include <stdint.h>
 #include <stm32f4xx.h>
 /*definición de variables del sistema */
-uint8_t a = 0;
-uint16_t b = 0;
-uint32_t c = 0;
-uint16_t s_dec = 0;
-uint16_t s_hex = 0;
-uint16_t s_bin = 0;
-uint8_t s_demo = 0;
-
+uint32_t counter = 0;
 
 //#if !defined(__SOFT_FP__) && defined(__ARM_FP)
 //  #warning "FPU is not initialized, but the project is compiling for an FPU. Please initialize the FPU before use."
 //#endif
 
+void delay_MS(uint32_t time_delay);
+
 int main(void)
 {
-	a = 255;
-	b = 245;
-	c = 222;
-	s_dec = 32;
-	s_hex = 0x20;
-	s_bin = 0b100000;
 
-	s_bin=s_bin << 3; // predicción 0b1000000000 =556
-	s_bin=s_bin >> 3; //predicción 0b100 = 4
-	/* exponeindo  el caso overflow*/
+	//SCB->CPAR |=(3UL << 20) | ()
+	//RCC->AHB1ENR |=(1<<0)
 
-	a = 255;
-	b = 255;
-	c = 255;
-
-	s_demo = a + 1; //por predicción se desborda y deberia dar 0, debemos prestar atención al tamaño de nuestras variables, por que el sistema se puede desbordar
-	s_demo = s_demo + 1;
-	s_demo= 735;
-	s_demo= 0;
-	for(uint8_t counter = 0; counter < 735; counter++){
-		s_demo++;
-	}
-
-	//RCC->AHB1ENR |=(1<<0);
 	RCC->AHB1ENR |=RCC_AHB1ENR_GPIOAEN;
 
 	GPIOA->MODER |= GPIO_MODER_MODE0_1;
@@ -66,16 +41,72 @@ int main(void)
 	//inicializacion de push pull
 	GPIOA->OTYPER &= ~(GPIO_OTYPER_OT5);
 	//posicion de los datos que quiero negar
-	GPIOA->OSPEEDR &= ~(0b11 <<GPIO_OSPEEDER_OSPEEDR5_Pos);
+	GPIOA->OSPEEDR &= ~(GPIO_OSPEEDER_OSPEEDR5);
 	//Velocidad media
-	GPIOA->OSPEEDR |= (0b10 <<GPIO_OSPEEDER_OSPEEDR5_Pos);
+	GPIOA->OSPEEDR |= (GPIO_OSPEEDER_OSPEEDR5_0);
 	//Escribir un 1 en la posicion 5
-	GPIOA->ODR |= (GPIO_ODR_OD5)
+	GPIOA->ODR |= (GPIO_ODR_OD5);
+
+	/*configuracion TIM3*/
+
+	/*limpiando la posicion TIM3EN*/
+	RCC->APB1ENR &= ~(RCC_APB1ENR_TIM3EN);
+
+	RCC->APB1ENR |= (RCC_APB1ENR_TIM3EN);
+
+	TIM3->ARR = 249; //Para generar señal de 250 m
+
+	TIM3->PSC = 15999;
+
+	TIM3->CNT = 0;
+
+	/*Configuracion para que el TIM3 cuente de forma ascendente*/
+	TIM3->CR1 &= ~(TIM_CR1_DIR);
 
 
+	TIM3->CR1 &= ~(TIM_CR1_ARPE);
+
+	TIM3->CR1 |= (TIM_CR1_ARPE);
+
+	/*Limpiamor ARP para tenerla en un estado conocido*/
+
+	TIM3->CR1 |= TIM_CR1_ARPE;
+
+	/*Activando la IRQ del TIM3 para que el NVIC reciba se;ales de ella*/
+	__NVIC_EnableIRQ(TIM3_IRQn);
+
+	/*Baja la bandera*/
+
+	TIM3->SR &= ~(TIM_SR_UIF);
+
+	/*Activa interrupcion*/
+	TIM3->DIER &= ~(TIM_DIER_UIE);
+
+	TIM3->DIER |= (TIM_DIER_UIE);
+
+	/* ponemos a 1 en UEN, de forma que el TIM3 comience a contar*/
+	TIM3->CR1 |= (TIM_CR1_CEN);
 
     /* Loop forever */
 	while(1){
 
 	}
 }
+/*ISR del TIM3*/
+void TIM3_IRQHandler(void){
+
+	if (TIM3->SR && TIM_SR_UIF) {
+
+			/*subimnos bandera interrupcion*/
+		GPIOA->ODR ^= GPIO_ODR_OD5;
+			/*Bajamos bandera interrupcion*/
+		TIM3->SR &= ~(TIM_SR_UIF);
+	}
+}
+
+void delay_MS(uint32_t time_delay){
+	for (counter = 0; counter < time_delay; counter++);
+}
+
+
+
