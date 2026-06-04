@@ -18,64 +18,159 @@
 
 #include <stdint.h>
 #include <stm32f4xx.h>
+
+//vairables
+
+volatile uint8_t aumentar_counter = 0;
+uint16_t counter = 0;
+
 /*definición de variables del sistema */
-uint8_t a = 0;
-uint16_t b = 0;
-uint32_t c = 0;
-uint16_t s_dec = 0;
-uint16_t s_hex = 0;
-uint16_t s_bin = 0;
-uint8_t s_demo = 0;
 
-
-//#if !defined(__SOFT_FP__) && defined(__ARM_FP)
+// if !defined(__SOFT_FP__) && defined(__ARM_FP)
 //  #warning "FPU is not initialized, but the project is compiling for an FPU. Please initialize the FPU before use."
 //#endif
 
+//headers
+void init_gpio(void);
+void init_timers(void);
+void init_exti(void);
+
 int main(void)
 {
-	a = 255;
-	b = 245;
-	c = 222;
-	s_dec = 32;
-	s_hex = 0x20;
-	s_bin = 0b100000;
+	init_gpio();
+	init_timers();
+	init_exti();
 
-	s_bin=s_bin << 3; // predicción 0b1000000000 =556
-	s_bin=s_bin >> 3; //predicción 0b100 = 4
-	/* exponeindo  el caso overflow*/
+	while(1){
+		if(aumentar_counter ==1){
+			counter = counter + 10;
+			aumentar_counter = 0;
+			}
+		}
+	return 0;
+}
 
-	a = 255;
-	b = 255;
-	c = 255;
-
-	s_demo = a + 1; //por predicción se desborda y deberia dar 0, debemos prestar atención al tamaño de nuestras variables, por que el sistema se puede desbordar
-	s_demo = s_demo + 1;
-	s_demo= 735;
-	s_demo= 0;
-	for(uint8_t counter = 0; counter < 735; counter++){
-		s_demo++;
-	}
-
-	//RCC->AHB1ENR |=(1<<0);
+void init_gpio(void){
+	//SCB->CPAR |=(3UL << 20) | ()
+	//RCC->AHB1ENR |=(1<<0)
+	//se;al de reloj puerto C
 	RCC->AHB1ENR |=RCC_AHB1ENR_GPIOAEN;
+	//se;al de reloj puerto H
+	RCC->AHB1ENR |=RCC_AHB1ENR_GPIOHEN;
 
-	GPIOA->MODER |= GPIO_MODER_MODE0_1;
+	//configurando pin LED_OK (H1)
+	GPIOH->MODER |= GPIO_MODER_MODE1_0;
+	GPIOH->OTYPER &= ~(GPIO_OTYPER_OT1);
+	GPIOH->OSPEEDR &= ~(GPIO_OSPEEDER_OSPEEDR1);
+	GPIOH->OSPEEDR |= GPIO_OSPEEDER_OSPEEDR1_1;
 
-	GPIOA->MODER |= (0b01 << GPIO_MODER_MODE5_Pos);
-	//inicializacion de push pull
-	GPIOA->OTYPER &= ~(GPIO_OTYPER_OT5);
-	//posicion de los datos que quiero negar
-	GPIOA->OSPEEDR &= ~(0b11 <<GPIO_OSPEEDER_OSPEEDR5_Pos);
-	//Velocidad media
-	GPIOA->OSPEEDR |= (0b10 <<GPIO_OSPEEDER_OSPEEDR5_Pos);
-	//Escribir un 1 en la posicion 5
-	GPIOA->ODR |= (GPIO_ODR_OD5)
+	//configuracion pin c1 como entrada simple
+	GPIOC->MODER &= ~GPIO_MODER_MODE1;
+	GPIOC->MODER &= ~GPIO_PUPDR_PUPD1;
+
+}
+
+void init_timers(void){
+	/*configuracion TIM3*/
+
+	/*limpiando la posicion TIM3EN*/
+	RCC->APB1ENR &= ~(RCC_APB1ENR_TIM3EN);
+
+	RCC->APB1ENR |= (RCC_APB1ENR_TIM3EN);
+
+	TIM3->ARR = 249; //Para generar señal de 250 m
+
+	TIM3->PSC = 15999;
+
+	TIM3->CNT = 0;
+
+	/*Configuracion para que el TIM3 cuente de forma ascendente*/
+	TIM3->CR1 &= ~(TIM_CR1_DIR);
 
 
+	TIM3->CR1 &= ~(TIM_CR1_ARPE);
+
+	TIM3->CR1 |= (TIM_CR1_ARPE);
+
+	/*Limpiamor ARP para tenerla en un estado conocido*/
+
+	TIM3->CR1 |= TIM_CR1_ARPE;
+
+	/*Activando la IRQ del TIM3 para que el NVIC reciba se;ales de ella*/
+	__NVIC_EnableIRQ(TIM3_IRQn);
+
+	/*Baja la bandera*/
+
+	TIM3->SR &= ~(TIM_SR_UIF);
+
+	/*Activa interrupcion*/
+	TIM3->DIER &= ~(TIM_DIER_UIE);
+
+	TIM3->DIER |= (TIM_DIER_UIE);
+
+	/* ponemos a 1 en UEN, de forma que el TIM3 comience a contar*/
+	TIM3->CR1 |= (TIM_CR1_CEN);
+
+	//configurando pin C1 como entrada
+	GPIOC->MODER &= ~GPIO_MODER_MODE1;
+
+	//pull up pull down disable
+	GPIOC->PUPDR &= ~GPIO_PUPDR_PUPD0_1;
 
     /* Loop forever */
-	while(1){
 
+	//cargamos configuraciones
+
+}
+
+void init_exti(void){
+	/*Encendiendo la se;al de reloj oara syscfg (exti) */
+	RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
+
+	//configurando el canal del exti
+	SYSCFG->EXTICR[0] &= ~(SYSCFG_EXTICR1_EXTI1);
+	//CONFIGURANDO CANAL 1 DEL EXTI
+	SYSCFG->EXTICR[0] |= (SYSCFG_EXTICR1_EXTI1);
+
+	//FLANCO DE SUBIDA
+	EXTI->RTSR |= EXTI_RTSR_TR1;
+
+	//REGISTRANDO LA INTERRUPCION EN EL NVIC EXTI1 PARA QUE SE ATIENDA
+	NVIC_EnableIRQ(EXTI1_IRQn);
+
+	//BAJAMOS BANDERA DE LA INTERRUPCION
+	EXTI->PR |= EXTI_PR_PR1;
+
+	//activamos la interrupcion
+	EXTI->IMR |= EXTI_IMR_IM1;
+}
+
+
+/*ISR del TIM3*/
+void TIM3_IRQHandler(void){
+
+	if (TIM3->SR && TIM_SR_UIF) {
+
+			/*subimnos bandera interrupcion*/
+		GPIOA->ODR ^= GPIO_ODR_OD5;
+			/*Bajamos bandera interrupcion*/
+		TIM3->SR &= ~(TIM_SR_UIF);
 	}
 }
+
+void delay_MS(uint32_t time_delay){
+	for (counter = 0; counter < time_delay; counter++);
+}
+
+void EXTI1_IRQHandler(void) {
+	//VERIFICANDO QUE SE DIO LA INTERRUPCION
+	if(EXTI->PR && EXTI_PR_PR1){
+		//bajamos bandera
+		EXTI->PR |= EXTI_PR_PR1;
+
+		aumentar_counter = 1;
+	}
+
+	//bajamnos bandera
+}
+
