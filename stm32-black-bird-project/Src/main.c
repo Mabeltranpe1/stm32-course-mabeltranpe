@@ -18,35 +18,59 @@
 
 #include <stdint.h>
 #include <stm32f4xx.h>
-/*definición de variables del sistema */
-uint32_t counter = 0;
 
-//#if !defined(__SOFT_FP__) && defined(__ARM_FP)
+//vairables
+
+volatile uint8_t aumentar_counter = 0;
+uint16_t counter = 0;
+
+/*definición de variables del sistema */
+
+// if !defined(__SOFT_FP__) && defined(__ARM_FP)
 //  #warning "FPU is not initialized, but the project is compiling for an FPU. Please initialize the FPU before use."
 //#endif
 
-void delay_MS(uint32_t time_delay);
+//headers
+void init_gpio(void);
+void init_timers(void);
+void init_exti(void);
 
 int main(void)
 {
+	init_gpio();
+	init_timers();
+	init_exti();
 
+	while(1){
+		if(aumentar_counter ==1){
+			counter = counter + 10;
+			aumentar_counter = 0;
+			}
+		}
+	return 0;
+}
+
+void init_gpio(void){
 	//SCB->CPAR |=(3UL << 20) | ()
 	//RCC->AHB1ENR |=(1<<0)
-
+	//se;al de reloj puerto C
 	RCC->AHB1ENR |=RCC_AHB1ENR_GPIOAEN;
+	//se;al de reloj puerto H
+	RCC->AHB1ENR |=RCC_AHB1ENR_GPIOHEN;
 
-	GPIOA->MODER |= GPIO_MODER_MODE0_1;
+	//configurando pin LED_OK (H1)
+	GPIOH->MODER |= GPIO_MODER_MODE1_0;
+	GPIOH->OTYPER &= ~(GPIO_OTYPER_OT1);
+	GPIOH->OSPEEDR &= ~(GPIO_OSPEEDER_OSPEEDR1);
+	GPIOH->OSPEEDR |= GPIO_OSPEEDER_OSPEEDR1_1;
 
-	GPIOA->MODER |= (0b01 << GPIO_MODER_MODE5_Pos);
-	//inicializacion de push pull
-	GPIOA->OTYPER &= ~(GPIO_OTYPER_OT5);
-	//posicion de los datos que quiero negar
-	GPIOA->OSPEEDR &= ~(GPIO_OSPEEDER_OSPEEDR5);
-	//Velocidad media
-	GPIOA->OSPEEDR |= (GPIO_OSPEEDER_OSPEEDR5_0);
-	//Escribir un 1 en la posicion 5
-	GPIOA->ODR |= (GPIO_ODR_OD5);
+	//configuracion pin c1 como entrada simple
+	GPIOC->MODER &= ~GPIO_MODER_MODE1;
+	GPIOC->MODER &= ~GPIO_PUPDR_PUPD1;
 
+}
+
+void init_timers(void){
 	/*configuracion TIM3*/
 
 	/*limpiando la posicion TIM3EN*/
@@ -87,11 +111,41 @@ int main(void)
 	/* ponemos a 1 en UEN, de forma que el TIM3 comience a contar*/
 	TIM3->CR1 |= (TIM_CR1_CEN);
 
-    /* Loop forever */
-	while(1){
+	//configurando pin C1 como entrada
+	GPIOC->MODER &= ~GPIO_MODER_MODE1;
 
-	}
+	//pull up pull down disable
+	GPIOC->PUPDR &= ~GPIO_PUPDR_PUPD0_1;
+
+    /* Loop forever */
+
+	//cargamos configuraciones
+
 }
+
+void init_exti(void){
+	/*Encendiendo la se;al de reloj oara syscfg (exti) */
+	RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
+
+	//configurando el canal del exti
+	SYSCFG->EXTICR[0] &= ~(SYSCFG_EXTICR1_EXTI1);
+	//CONFIGURANDO CANAL 1 DEL EXTI
+	SYSCFG->EXTICR[0] |= (SYSCFG_EXTICR1_EXTI1);
+
+	//FLANCO DE SUBIDA
+	EXTI->RTSR |= EXTI_RTSR_TR1;
+
+	//REGISTRANDO LA INTERRUPCION EN EL NVIC EXTI1 PARA QUE SE ATIENDA
+	NVIC_EnableIRQ(EXTI1_IRQn);
+
+	//BAJAMOS BANDERA DE LA INTERRUPCION
+	EXTI->PR |= EXTI_PR_PR1;
+
+	//activamos la interrupcion
+	EXTI->IMR |= EXTI_IMR_IM1;
+}
+
+
 /*ISR del TIM3*/
 void TIM3_IRQHandler(void){
 
@@ -108,5 +162,15 @@ void delay_MS(uint32_t time_delay){
 	for (counter = 0; counter < time_delay; counter++);
 }
 
+void EXTI1_IRQHandler(void) {
+	//VERIFICANDO QUE SE DIO LA INTERRUPCION
+	if(EXTI->PR && EXTI_PR_PR1){
+		//bajamos bandera
+		EXTI->PR |= EXTI_PR_PR1;
 
+		aumentar_counter = 1;
+	}
+
+	//bajamnos bandera
+}
 
