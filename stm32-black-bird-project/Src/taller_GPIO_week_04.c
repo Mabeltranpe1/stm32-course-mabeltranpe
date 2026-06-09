@@ -23,7 +23,7 @@ void int_RCC(void);
 void init_PORTA(void);
 void init_PORTB(void);
 void init_PORTC(void);
-int calcilar (uint8_t num1,uint8_t num2, char  op)
+int calcular (uint8_t num1,uint8_t num2, char  op)
 
 
 int main(void){
