@@ -10,9 +10,9 @@
 #include "stm32f4xx.h"
 
 /*VARIABLES*/
-uint16_t numero = 0;
-uint16_t display = 0; //variable para controlar cual display del 7 segmentos se activa
-uint16_t representacion = 0; //SE USA 16 BITS PARA PODER CONTAR HASTA 9999, es el numero completo a descomponer.
+volatile uint16_t numero = 0;
+volatile uint16_t display = 0; //variable para controlar cual display del 7 segmentos se activa
+volatile uint16_t representacion = 0; //SE USA 16 BITS PARA PODER CONTAR HASTA 9999, es el numero completo a descomponer.
 //uint8_t unidades = 0; //representa descomposicion de la unidad de representacion
 //uint8_t decenas = 0; //representa descomposicion de las decenas de representacion
 //uint8_t centenas = 0; //representa descomposicion de las centenas de representacion
@@ -22,31 +22,19 @@ uint16_t representacion = 0; //SE USA 16 BITS PARA PODER CONTAR HASTA 9999, es e
 
 void init_GPIO(void);
 void init_TIM(void);
+void init_EXTI(void);
 uint16_t num_set(uint16_t numero); //configura los leds para representar el numero en el display
 uint16_t display_select(uint16_t display);
 uint16_t decimal(uint16_t representacion, uint16_t display);
+
 /*MAIN*/
 int main(void){
 	init_GPIO();
 	init_TIM();
-	representacion = 6060;
+	init_EXTI();
 	while(1){
 
-		if (TIM2->SR & TIM_SR_UIF){
 
-
-			GPIOB->ODR |= (0b1111 << 6) ;
-			GPIOC->ODR |= (0b11111111 << 5) ;
-			numero = decimal (representacion , display);
-			GPIOB->ODR &= ~(display_select(display) << 6);
-			GPIOC->ODR &= ~(num_set(numero) << 5);
-
-			display++;
-			if (display == 4){
-				display = 0;
-			}
-			TIM2->SR &= ~(TIM_SR_UIF);
-		}
 
 		if (TIM3->SR & TIM_SR_UIF){
 			GPIOH->ODR ^= GPIO_ODR_OD1;
@@ -102,6 +90,11 @@ void init_GPIO(void){
 	GPIOC->ODR |= (GPIO_ODR_OD5 | GPIO_ODR_OD6 | GPIO_ODR_OD8 | GPIO_ODR_OD9 | GPIO_ODR_OD10 | GPIO_ODR_OD11 | GPIO_ODR_OD12);
 
 
+	/*CONFIGURACION DE PINES A PARA EXTI*/
+	GPIOA->MODER &=~(GPIO_MODER_MODE0 | GPIO_MODER_MODE1);
+	GPIOA->PUPDR &= ~(GPIO_PUPDR_PUPD0 | GPIO_PUPDR_PUPD1);
+
+
 	/*ACTIVACION LED OK!*/
 	/*SEÑAL DE RELOJ*/
 	RCC->AHB1ENR |= RCC_AHB1ENR_GPIOHEN;
@@ -113,6 +106,8 @@ void init_GPIO(void){
 	GPIOH->OSPEEDR |= (GPIO_OSPEEDER_OSPEEDR1_1);
 	GPIOH->PUPDR &= ~(GPIO_PUPDR_PUPD1);
 	GPIOH->ODR |= GPIO_ODR_OD1;
+
+
 
 }
 
@@ -133,8 +128,37 @@ void init_TIM(void){
 	/*INICIANDO TIMER TAZA DE REFRESCO 60 HZ*/
 	TIM2->PSC = 15999;
 	TIM2->ARR = 3;
+	TIM2->DIER |= TIM_DIER_UIE;
 	TIM2->CR1 |= TIM_CR1_CEN;
 
+	__NVIC_EnableIRQ(TIM2_IRQn);
+}
+
+void init_EXTI(void){
+
+	/*INICIO SEÑAL DE RELOJ EXTI*/
+	RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
+
+	/*CONFIGURACION EXTI*/
+	/*PIN A0*/
+	SYSCFG->EXTICR[0] &=~(SYSCFG_EXTICR1_EXTI0);
+	SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI0_PA;
+
+	EXTI->IMR |= EXTI_IMR_IM0 ; //se abre paso a interrupciones para el nvic
+	EXTI->RTSR |= EXTI_RTSR_TR0 ;//se configura flancos de subida (cuando se tapa el foto interruptor)
+
+
+	/*PIN A1*/
+	SYSCFG->EXTICR[0] &=~(SYSCFG_EXTICR1_EXTI1);
+	SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI1_PA;
+
+	EXTI->IMR |= EXTI_IMR_IM1 ; //se abre paso a interrupciones para el nvic
+	EXTI->RTSR |= EXTI_RTSR_TR1 ;//se configura flancos de subida (cuando se tapa el foto interruptor)
+
+	EXTI->PR |= (EXTI_PR_PR0 | EXTI_PR_PR1);
+
+	__NVIC_EnableIRQ(EXTI0_IRQn);
+	__NVIC_EnableIRQ(EXTI1_IRQn);
 }
 
 /*función que selecciona los leds que se iluminan para representar cada numero*/
@@ -151,7 +175,7 @@ uint16_t num_set(uint16_t numero){
 		case 6: return 0b11011011;
 		case 7: return 0b10100010;
 		case 8: return 0b11111011;
-		case 9: return 0b11111011;
+		case 9: return 0b11100011;
 		default: return 1;
 	}
 }
@@ -197,4 +221,40 @@ uint16_t decimal(uint16_t representacion , uint16_t display){
 	}
 }
 
+void TIM2_IRQHandler(void){
+	if (TIM2->SR & TIM_SR_UIF){
 
+
+		GPIOB->ODR |= (0b1111 << 6) ;
+		GPIOC->ODR |= (0b11111111 << 5) ;
+		numero = decimal (representacion , display);
+		GPIOB->ODR &= ~(display_select(display) << 6);
+		GPIOC->ODR &= ~(num_set(numero) << 5);
+
+		display++;
+		if (display == 4){
+			display = 0;
+		}
+		TIM2->SR &= ~(TIM_SR_UIF);
+	}
+}
+
+void EXTI0_IRQHandler(void){
+	if (EXTI->PR & EXTI_PR_PR0 ){
+		EXTI->PR |= EXTI_PR_PR0;
+		++representacion;
+		if (representacion > 9999){   //se agrega limite superior para siempre asegurar leer hasta 9999.
+			representacion = 0;      //aunque dudo mucho llegar a ese valor jejejjejejejjeje.
+		}
+	}
+}
+
+void EXTI1_IRQHandler(void){
+	if (EXTI->PR & EXTI_PR_PR1){
+		EXTI->PR |= EXTI_PR_PR1;
+		--representacion;
+		if (representacion < 0){      //se agrega proteccion para que no existan numeros negativos
+			representacion = 0;
+		}
+	}
+}
