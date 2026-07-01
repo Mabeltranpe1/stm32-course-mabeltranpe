@@ -66,7 +66,7 @@ void init_gpio(void){
 
 	//configuracion pin c1 como entrada simple
 	GPIOC->MODER &= ~GPIO_MODER_MODE1;
-	GPIOC->PUPDR &= ~GPIO_PUPDR_PUPD1;
+	GPIOC->MODER &= ~GPIO_PUPDR_PUPD1;
 
 }
 

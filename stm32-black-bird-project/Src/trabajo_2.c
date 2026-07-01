@@ -10,14 +10,10 @@
 #include "stm32f4xx.h"
 
 /*VARIABLES*/
-volatile uint16_t numero = 0;
+volatile uint16_t numero = 0;  //esta variable se carga con el numero que se va a representar en el display correspondiente
 volatile uint16_t display = 0; //variable para controlar cual display del 7 segmentos se activa
 volatile uint16_t representacion = 0; //SE USA 16 BITS PARA PODER CONTAR HASTA 9999, es el numero completo a descomponer.
-//uint8_t unidades = 0; //representa descomposicion de la unidad de representacion
-//uint8_t decenas = 0; //representa descomposicion de las decenas de representacion
-//uint8_t centenas = 0; //representa descomposicion de las centenas de representacion
-//uint8_t umil = 0 ; //representa descomposicion de las unidades de mil de representacion
-
+volatile uint8_t antirebote = 0; //variable que se usa para evitar el rebote a la hora de registrar una interrupcion en el fotointerruptor y que no se registren varios numeros de golpe
 /*HEADERS*/
 
 void init_GPIO(void);
@@ -123,14 +119,14 @@ void init_TIM(void){
 	/*INICIANDO TIMER LED OK*/
 	TIM3->PSC = 15999;
 	TIM3->ARR = 99;
-	TIM3->CR1 |= TIM_CR1_CEN;
+	TIM3->CR1 |= TIM_CR1_CEN; //TIM3 configurado cada 100 ms
 
-	/*INICIANDO TIMER TAZA DE REFRESCO 60 HZ*/
+	/*INICIANDO TIMER TAZA DE REFRESCO*/
 	TIM2->PSC = 15999;
 	TIM2->ARR = 3;
 	TIM2->DIER |= TIM_DIER_UIE;
-	TIM2->CR1 |= TIM_CR1_CEN;
-
+	TIM2->CR1 |= TIM_CR1_CEN;    //frecuencia del TIM2 configurado cada 4ms, cada 4ms se activa un display y muestra el numero correspondiente
+                                 //a esa posicion
 	__NVIC_EnableIRQ(TIM2_IRQn);
 }
 
@@ -166,9 +162,9 @@ uint16_t num_set(uint16_t numero){
 
 	switch (numero){
 
-		case 0: return 0b11111010;
-		case 1: return 0b00100010;
-		case 2: return 0b10111001;
+		case 0: return 0b11111010;    //cada case representa que registros se activan para representar su respectivo numero.
+		case 1: return 0b00100010;    //esta funcion retorna un numero que posteriormente será shifteado a sus respectivas posiciones en el registro.
+		case 2: return 0b10111001;    //siguiendo el equema de pines configurado en en la activacion de GPIO
 		case 3: return 0b10101011;
 		case 4: return 0b01100011;
 		case 5: return 0b11001011;
@@ -183,8 +179,8 @@ uint16_t num_set(uint16_t numero){
 uint16_t display_select(uint16_t display){
 
 	switch (display){
-		case 0: return 0b0001;
-		case 1: return 0b1000;
+		case 0: return 0b0001;        //cada case de esta funcion retorna un numero binario el cual contiene un 1 que es shiteado en el registro
+		case 1: return 0b1000;        //para activar el display correspondiente
 		case 2: return 0b0010;
 		case 3: return 0b0100;
 		default: return 0;
@@ -193,27 +189,28 @@ uint16_t display_select(uint16_t display){
 
 uint16_t decimal(uint16_t representacion , uint16_t display){
 	uint16_t num_posicion = 0;
-//
-//	num_posicion = representacion % (decima) ;
-//	num_posicion /= (decima/10);
-//	return num_posicion;
+/* El algoritmo para poder descomponer el numero a representar, toma el numero y saca el residuo de la division de una potencia de 10
+ * correspondiente a su posicion, de esta manera se descartan los numeros a la izquierda del que deseo separar, luego divido entre
+ * otra potencia de 10 ^ (n-1) el cual elimina toda la parte izquierda del numero que quiero representar, aprovechando que la
+ * division de enteros me da el numero entero.
+ */
 	switch(display){
-	/* CALCULA QUE NUMERO ESTA EN LA UNIDADES*/
+	/* CALCULA QUE NUMERO ESTA EN LAS UNIDADES DE MIL*/
 	case 0:
 		num_posicion = representacion % 10000 ;
 		num_posicion /= 1000 ;
 		return num_posicion;
-	/*CALCULA QUE NUMERO ESTA EN LAS DECENAS*/
+	/*CALCULA QUE NUMERO ESTA EN LAS CENTENAS*/
 	case 1:
 		num_posicion = representacion % 1000;
 		num_posicion /= 100;
 		return num_posicion;
-	/*CALCULA QUE NUMERO ESTA EN LAS CENTENAS*/
+	/*CALCULA QUE NUMERO ESTA EN LAS DECENAS*/
 	case 2:
 		num_posicion = representacion % 100;
 		num_posicion /= 10;
 		return num_posicion;
-	/*CALCULA QUE NUMERO ESTA EN LAS UNIDADES DE MIL*/
+	/*CALCULA QUE NUMERO ESTA EN LAS UNIDADES*/
 	case 3:
 		num_posicion = representacion % 10;
 		return num_posicion;
@@ -225,24 +222,30 @@ void TIM2_IRQHandler(void){
 	if (TIM2->SR & TIM_SR_UIF){
 
 
-		GPIOB->ODR |= (0b1111 << 6) ;
+		GPIOB->ODR |= (0b1111 << 6) ;            //se limpian los registros que representan los numeros y que display se debe activar
 		GPIOC->ODR |= (0b11111111 << 5) ;
-		numero = decimal (representacion , display);
-		GPIOB->ODR &= ~(display_select(display) << 6);
-		GPIOC->ODR &= ~(num_set(numero) << 5);
+		numero = decimal (representacion , display);  //se descompone el numero, el cual será representado en el display
+		GPIOB->ODR &= ~(display_select(display) << 6); //se carga cual es el display que se va a representar
+		GPIOC->ODR &= ~(num_set(numero) << 5);         //se configura cuales oines se activan para representar el numero
 
-		display++;
-		if (display == 4){
+		display++;             //la posicion del display que se va a mostrar se actualiza
+		if (display == 4){     // si esl display alcanza la cuarta posicion, vuelve al primer display
 			display = 0;
 		}
-		TIM2->SR &= ~(TIM_SR_UIF);
+		if (antirebote > 0){        //el anti rebote se reduce en una unidad a la velocidad del TIM2,
+			--antirebote;           //o sea, el antirebote bloquea la recepcion de interrupciones durante 25*4ms = 100 ms
+		}
+		TIM2->SR &= ~(TIM_SR_UIF);   //se baja la bandera
 	}
 }
 
 void EXTI0_IRQHandler(void){
-	if (EXTI->PR & EXTI_PR_PR0 ){
-		EXTI->PR |= EXTI_PR_PR0;
-		++representacion;
+	if (EXTI->PR & EXTI_PR_PR0 ){   //se revisa si hay bandera levantada
+		EXTI->PR |= EXTI_PR_PR0;    //se baja la bandera
+		if (antirebote == 0){   //el antirebote debe estar en 0 para que se pueda volver a registrar una interrupcion.
+			++representacion;
+			antirebote = 25;    //cuando el contador aumenta, el antirebote se registra en 25.
+		}
 		if (representacion > 9999){   //se agrega limite superior para siempre asegurar leer hasta 9999.
 			representacion = 0;      //aunque dudo mucho llegar a ese valor jejejjejejejjeje.
 		}
@@ -250,11 +253,13 @@ void EXTI0_IRQHandler(void){
 }
 
 void EXTI1_IRQHandler(void){
-	if (EXTI->PR & EXTI_PR_PR1){
-		EXTI->PR |= EXTI_PR_PR1;
-		--representacion;
-		if (representacion < 0){      //se agrega proteccion para que no existan numeros negativos
-			representacion = 0;
+	if (EXTI->PR & EXTI_PR_PR1){  //se revisa si hay bandera levantada
+		EXTI->PR |= EXTI_PR_PR1;  //se baja la bandera
+		if (antirebote == 0){     // de nuevo solo se atiende la interrupcion si ya paso el tiempo de antirebote
+			if (!representacion == 0){      //se agrega proteccion para que no existan numeros negativos, no se pueda bajar de 0000
+				--representacion;
+				antirebote = 25;
+			}
 		}
 	}
 }
