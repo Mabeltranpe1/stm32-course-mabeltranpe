@@ -1,0 +1,440 @@
+/*
+ * trabajo_3.c
+ *
+ *  Created on: Jun 10, 2026
+ *      Author: marcop
+ */
+
+#include "stm32f4xx_hal.h"
+#include <string.h>
+#include <stdio.h>
+
+/*BAUD RATE CONFIGURADO EN 115200*/
+
+/*VARIABLES*/
+
+//TODAS LAS VARIBLES VOLATILES SON PORQUE SON ATENDIDAS EN INTERRUPCIONES, SINO ES QUE SON ATENDIDAS EN EL PULLING
+volatile uint8_t RXchange = 0; //VARIABLE QUE ALMACENA LA INFORMACION QUE LLEGA DEL COMPUTADOR EN LA COMUNICACION SERIAL, USADA PARA SUBIR O BAJAR PWM MEDIANTE USART
+volatile uint16_t duty = 0;    // LA VARIABLE QUE SETEA DUTY CYCLE DEL PWM CONTROLADO POR UART ASOCIADO AL CANAL 1
+uint16_t duty2 = 0;   //VARIABLE QUE SETEA EL DUTY CYCLE DEL PWM CONTROLADO POR EL ENCODER ASOCIADO AL CANAL
+volatile uint16_t duty3 = 0;  // VARIABLE QUE SETEA EL DUTY DEL PWM CONTROLADO POR EL ADC ASOCIADO AL CANAL 3
+volatile uint16_t raw_adc = 0;   //ESTA VARIABLE ALMACENA LOS VALORES EN CURDO RECIBIDOS POR EL PIN DE ADC
+volatile uint8_t mensaje = 0;  // ESTA ES UNA VARIABE QUE FUNCIONA COMO VANDERA, EN EL WHILE SE VERIFICA EL VALOR, SI LA VARIABLE SE ENCUENTRA EN 1 ENTONCES SE ENTRA A UN POLLING PARA ENVIAR EL MENSAJE POR TX
+uint8_t msg_buffer [64] = {0};  //ESTA ES LA VARIABLE QUE CONTIENE LA INFORMACION QUE SE VA A ENVIAR POR MEDIO DE TX
+uint16_t voltaje = 0;    // EN ESTA VARIABLE SE VA A ALMACENAR EL VOLTAJE MEDIDO POR EL ADC A PARTIR DEL DATO EN CRUDO RAW_ADC
+char * direccion = "--";  //ESTA VARIABLE SE USA PARA VER EL SENTIDO DE GIRO DEL ENCODER
+uint16_t ultimoDato = 0;   // ESTA VARIABLE VA A ALMACENAR CUAL ES LA ULTIMA CUENTA REALIZADA POR CNT EN EL ENCODER, ESTA VARIABLE SE USA PARA VER LA DIERCCION DE GIRO
+int16_t diferencia = 0;  //ESTA VARIABLE SE USA PARA ESTABLECER LA DIFERENCIA ENTRE UN PUNTO ACTUAL Y UN PUNTO ANTERIOR, PARA VERIFICAR QUE LOS CAMBIOS SEAN PEQUEÑOS
+/* LOS HANDLE DE LOS TIMERS, DEL ADC Y DEL UART DEBEN SER GLOBALES PARA QUE SE PUEDAN ACCEDER EN CUALQUIER MOMENTO */
+ADC_HandleTypeDef hadc1;
+TIM_HandleTypeDef htim4; //TIIMER QUE CONTROLA EL LEDOK
+TIM_HandleTypeDef htim3; //TIMER USADO PARA LED ADC
+TIM_HandleTypeDef htim2; //TIMER USADO PARA EL ENCODER
+TIM_HandleTypeDef htim1; //TIMER QUE CONTROLA EL PWM
+UART_HandleTypeDef huart2;
+
+/*HEADERS*/
+static void CLK_Init(void);  //INCIO DEL RELOJ DEL SISTEMA
+static void LEDOK_Init(void);  //INICIO DEL TIMER 4 Y EL GPIO QUE CONTROLA LED OK
+static void PWM_Init(void);  //INICIO, CONFIGURACION DEL TIMER 1 EN MODO PWM, JUNTO CON LOS PINES QUE CONTROLARAN CADA CANAL
+static void USART_Init(void);  //INICIO Y CONFIGURACION DE LOS PINES QUE RECIBIRAN Y TRANSMITIRAN INFORMACION RX Y TX
+static void ENCODER_Init(void);  //INCIO Y CONFIGURACION DEL TIMER 2 EN MODO ENCODER, DE MANERA QUE SE REGISTREN LAS CUENTAS AL GIRAR EL ENCODER
+static void ADC_Init(void);  //INICIO Y CONFIGURACION DEL PIN QUE RECIBE LA INFORMACION DE ADC, ADEMAS DEL TIMER 3 QUE FUNCIONA COMO TRIGGER (O SEA CADA CUANTO SE TOMA UN DATO DE ADC)
+/*MAIN*/
+int main(void){
+	HAL_Init();
+	CLK_Init();
+	LEDOK_Init();
+	PWM_Init();
+	USART_Init();
+	ENCODER_Init();
+	ADC_Init();
+	/*TODO EL REGISTRO DEL ENCODER Y CONFIGURACION DE SU RESPECTIVO PWM SE REALIZA CON POLLING, SI BIEN NO ES LO MAS IDEAL, ES UNA MEDIDA TOMADA PARA CUMPLIR CON SOLO USAR 4 TIMERS
+	 * PENSÉ EN CONFIGURARLO APROVECAHNDO EL TIMER DE LED OK, SIN EMBARGO ESE TIMER ESTA CONFIGURADO A UNA VELOCIDAD BAJA, POR LO QUE PROBABLEMENTE SE VERIA COMO UNA INERCIA A LA HORA
+	 * DE MOVER EL ENCODER Y VER LA INFLUENCIA SOBRE SU RESPECTIVO SOLOR DE LED.*/
+	while (1){
+		/*SE ESTABLECE UN FILTRO DE SEGURIDAD PARA EVITAR QUE LAS CUENTAS SE DESBORDE Y QUE DE 0 NO PASE A 99 O DE 99 A 0. LA LOGICA DE LAS BARRERAS ES SIEMPRE TOMAR
+		 * LAS DIFERENCIAS ENTRE UN VALOR PASADO Y UN VALOR ACTUAL (DUTY2 - VALOR ACTUAL), LA UNICA MANERA DE QUE EL DUTY SE ACTUALICE ES QUE EL DELTA SEA DE VALORES MUY PEQUEÑOS
+		 * SI SE REGISTRA UN CAMBIO MUY GRANDE SE DEJA EN EL VALOR ANTES DE DESBORDARSE*/
+
+		ultimoDato = (uint16_t)htim2.Instance->CNT;
+		diferencia = duty2-ultimoDato;
+		if (diferencia > -10 && diferencia < 10){
+			if (ultimoDato > duty2){
+				direccion = "CW";
+			}
+			else if (ultimoDato < duty2){
+				direccion = "CCW";
+			}
+
+			duty2 = ultimoDato;
+			__HAL_TIM_SET_COMPARE(&htim1,TIM_CHANNEL_2, duty2);
+
+		}
+		else{
+			htim2.Instance->CNT = duty2;   // cuenta implausible: restaurar la ultima posicion valida
+		}
+
+		/*ENVIO DE DATOS MEDIATE POLLING*/
+		if (mensaje == 1){
+			voltaje = (uint16_t)(((uint32_t)raw_adc * 3300)/4095);   // SE CALCULA EL VALOR DEL ADC EN MV A PARTIR DE LOS DATOSS EN CRUDO
+			sprintf((char *)msg_buffer, "usart=%u encoder=%u %s adc=%u raw %u mV\r\n", duty, duty2, direccion, duty3,voltaje);
+			HAL_UART_Transmit(&huart2, msg_buffer, strlen((char *)msg_buffer), 100);
+			mensaje = 0;  // SE BAJA LA BANDERA PARA DECIR QUE EL MENSAJE YA SE HA ENVIADO, SE ESPERA QUE SE VUELVA A ACTIVAR PARA ENVIAR EL PROXIMO MENSAJE, SE APROVECHA EL TIMER
+		}                //DE LEDOK PARA VOLVER A ACTIVAR LA BANDERA
+
+	}
+}
+/*FUNCTIONS*/
+static void CLK_Init(void){
+	RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+	RCC_ClkInitTypeDef RCC_CLKInitStruct = {0};
+
+	//configuracion del oscilador HSI
+	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+	RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+	RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+	HAL_RCC_OscConfig(&RCC_OscInitStruct);
+
+	RCC_CLKInitStruct.ClockType = RCC_CLOCKTYPE_SYSCLK |
+			RCC_CLOCKTYPE_HCLK |
+			RCC_CLOCKTYPE_PCLK1 |
+			RCC_CLOCKTYPE_PCLK2;
+	RCC_CLKInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+	RCC_CLKInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;   //16 MHz
+	RCC_CLKInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;    //16 MHz
+	/* FLASH_LATENCY_0 = cero wait states, correcto para 16 MHz */
+	HAL_RCC_ClockConfig(&RCC_CLKInitStruct, FLASH_LATENCY_0);
+
+
+}
+
+
+static void LEDOK_Init(void)
+{
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	/* Habilitar reloj de GPIOH */
+	__HAL_RCC_GPIOH_CLK_ENABLE();
+	/* Configurar PH1 */
+	GPIO_InitStruct.Pin = GPIO_PIN_1;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
+	/*EL TIMER USADO PARA CONFIGURAR EL LED OK ES EL TIMER 4. EL TIMER 4 ENTRE TODOS LOS TIMERS QUE HE ELEGIDO ES EL UNICO QUE NO TIENE LA FUNCION DE ADC
+	 * CON TRIGGER, POR LO QUE ES MEJOR USARLO EN LED OK
+	 */
+	__HAL_RCC_TIM4_CLK_ENABLE();
+	/* Configurar la base de TIM4 */
+	htim4.Instance = TIM4;
+	htim4.Init.Prescaler = 15999;  //PRESCALER SE CONFIGURA A 1KHZ
+	htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+	htim4.Init.Period = 249;  // EL LED PARPADEA CADA 250 ms
+	htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+	HAL_TIM_Base_Init(&htim4);
+	/* Arrancar TIM4 en modo interrupción — habilita la interrupción de evento de actualización */
+	HAL_TIM_Base_Start_IT(&htim4);
+	/* Habilitar la línea de interrupción de TIM4 en el NVIC */
+	HAL_NVIC_EnableIRQ(TIM4_IRQn);
+}
+/*
+ * HAL_TIM_PeriodElapsedCallback
+ * Llamado automáticamente por HAL_TIM_IRQHandler() cada vez que un evento
+ * de actualización del timer se dispara. Es compartido por todos los timers
+ * — siempre verifica htim->Instance.
+ */
+
+static void PWM_Init(void){
+
+	GPIO_InitTypeDef RGB_InitStruct = {0};
+	/*primero voy a encender el RCC de los pines A ya que son los que usaré para controlar el RGB
+	 * EL PIN PA8 controla EL LED VERDE
+	 * EL PIN PA9 controla EL LED AZUL
+	 * EL PIN PA10 controla EL LED ROJO*/
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	/*INICIO DE CADA PIN*/
+	RGB_InitStruct.Pin = GPIO_PIN_8;
+	RGB_InitStruct.Mode = GPIO_MODE_AF_PP;         //INICIO PIN PA8
+	RGB_InitStruct.Pull = GPIO_NOPULL;
+	RGB_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	RGB_InitStruct.Alternate = GPIO_AF1_TIM1;
+	HAL_GPIO_Init(GPIOA, &RGB_InitStruct);
+
+	RGB_InitStruct.Pin = GPIO_PIN_9;
+	RGB_InitStruct.Mode = GPIO_MODE_AF_PP;         //INICIO PIN PA9
+	RGB_InitStruct.Pull = GPIO_NOPULL;
+	RGB_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	RGB_InitStruct.Alternate = GPIO_AF1_TIM1;
+	HAL_GPIO_Init(GPIOA, &RGB_InitStruct);
+
+	RGB_InitStruct.Pin = GPIO_PIN_10;
+	RGB_InitStruct.Mode = GPIO_MODE_AF_PP;         //INICIO PIN PA10
+	RGB_InitStruct.Pull = GPIO_NOPULL;
+	RGB_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	RGB_InitStruct.Alternate = GPIO_AF1_TIM1;
+	HAL_GPIO_Init(GPIOA, &RGB_InitStruct);
+
+	/*AHORA SIGUE INICIAR EL TIMER1 QUE ES EL TIMER QUE CONTROLA ESTOS PINES,
+	 * Y POR MEDIO DE LOS CANALES DE ESTE TIMER SE HARÁ EL CONTROL DE LAS LUCES RGB*/
+
+	/* CADA PIN EN LAS ALTERNATIVE FUNCTIONS ESTA ASOCIADO A UN CANAL DEL TIMER1
+	 * LOS CUALES SON LOS QUE USAREMOS PARA CONTROLAR CADA LED DEL RGB.
+	 * ESTO SE PUEDE HACER DEBIDO A QUE CADA PWM COMPARTEN TODOS LA MISMA FRECUENCIA, LA DEL PWM
+	 * LO QUE CAMBIA ES EL DUTY CYCLE
+	 * CH1 ASOCIADO A PA8
+	 * CH2 ASOCIADO A PA9
+	 * CH3 ASOCIADO A PA10*/
+	__HAL_RCC_TIM1_CLK_ENABLE();
+	/* CONFIGURACION DE LA BASE DEL TIMER 1 A 5KHZ*/
+	htim1.Instance = TIM1;
+	htim1.Init.Prescaler = 31;  // PRESCALER QUEDA EN 500KHZ O CUENTAS DE 2 uS
+	htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+	htim1.Init.Period = 99;  //EL PERIODO SE CONFIGURA EN 2uS * 100 = 200 uS  1/200 uS = 5KHZ DE ESTA MANERA SE TIENE UNA RESOLUCION DE 100 PASOS
+	htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+	HAL_TIM_PWM_Init(&htim1);
+
+	/* ARRANCAR CADA CANAL DE TIM1 COMO PWM
+	 * MI LED ES DE CATODO COMUN, LO QUE SIGNIFICA QUE DEBO CONFIGURAR MI PWM COMO PWM1, O SEA, SE INICIA EN HIGH
+	 * PERO CUANDO SE ALCANZA EL CCR BAJA A LOW, Y NO SE DEBE CAMBIAR LA POLARIDAD */
+	TIM_OC_InitTypeDef PWM_Config = {0};
+	PWM_Config.OCMode = TIM_OCMODE_PWM1;
+	PWM_Config.Pulse = duty;
+	PWM_Config.OCPolarity = TIM_OCPOLARITY_HIGH;
+	PWM_Config.OCFastMode = TIM_OCFAST_DISABLE;
+	PWM_Config.OCIdleState = TIM_OCIDLESTATE_RESET;
+
+	HAL_TIM_PWM_ConfigChannel(&htim1,&PWM_Config,TIM_CHANNEL_1);
+	HAL_TIM_PWM_ConfigChannel(&htim1,&PWM_Config,TIM_CHANNEL_2);
+	HAL_TIM_PWM_ConfigChannel(&htim1,&PWM_Config,TIM_CHANNEL_3);
+	HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_2);
+	HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_3);
+
+}
+
+
+static void USART_Init(void){
+	/*PARA EL UART SE VAN A CONFIGURAN LOS PINES PA2 Y PA3 YA QUE ESTOS ESTABLECEN UNA CONEXION DIRECTA CON EL PC MEDIANTE CABLE USB */
+	GPIO_InitTypeDef GPIO_InitTX = {0}; //inicio de transmision de datos
+	//USART2 esta conecato a APB1
+	//acticvacion de PIN PA2 con RCC
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	//configuracion de PA2 para usarlo como UART
+
+	GPIO_InitTX.Pin   = GPIO_PIN_2;   //PIN de TX
+	GPIO_InitTX.Mode  = GPIO_MODE_AF_PP;  //se establece que se va a usar una funcion alternativa
+	GPIO_InitTX.Pull  = GPIO_NOPULL;  //no es necesario tener un pull ya que eso esta controlado por el USART
+	GPIO_InitTX.Speed = GPIO_SPEED_FREQ_LOW;
+	GPIO_InitTX.Alternate = GPIO_AF7_USART1;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
+	//se carga la configuracion
+	HAL_GPIO_Init(GPIOA, &GPIO_InitTX);
+
+	//inicio del pin para RX, se va a usar Pa3 como se define en la tabla de funciones extra
+	GPIO_InitTypeDef GPIO_InitRX = {0};
+	GPIO_InitRX.Pin   = GPIO_PIN_3;       //PIN de RX
+	GPIO_InitRX.Mode  = GPIO_MODE_AF_PP;
+	GPIO_InitRX.Pull  = GPIO_NOPULL;
+	GPIO_InitRX.Speed = GPIO_SPEED_FREQ_LOW;
+	GPIO_InitRX.Alternate = GPIO_AF7_USART1;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
+
+	HAL_GPIO_Init(GPIOA, &GPIO_InitRX);
+
+	__HAL_RCC_USART2_CLK_ENABLE();
+
+	huart2.Instance = USART2;
+	/*config 115200 8N1 - 8 bit data, TX y RX */
+	huart2.Init.BaudRate = 115200;
+	huart2.Init.Mode = UART_MODE_TX_RX;  //SE ACTIVA EL MODO DE ENVIO Y RECEPCION DE DATOS
+	huart2.Init.Parity =  UART_PARITY_NONE;
+	huart2.Init.StopBits = UART_STOPBITS_1;
+	huart2.Init.WordLength = UART_WORDLENGTH_8B;
+	/*Cargar la configuracion del UART2 en los FSR del MCU */
+	HAL_UART_Init(&huart2);
+	/*SE CARGA LA CONFIGURACION DE RX DEL UART, ADEMÁS SE ESTABLECE LA VARIABLE DONDE SE VA A ALMACENAR LA LETRA QUE MODIFICA EL PWM,
+	 * SE CONFIUGRA UN SIZE DE 1 YA QUE SOLO SE CONTROLA MEDIANTE UNA SOLA LETRA*/
+	HAL_UART_Receive_IT(&huart2, &RXchange, 1);
+	/*CONFIGURACION DE LA INTERUPCION EN EL NVIC*/
+	HAL_NVIC_EnableIRQ(USART2_IRQn);
+
+}
+
+static void ENCODER_Init(void){
+
+	GPIO_InitTypeDef GPIO_EncoderInit = {0}; //inicio de transmision de datos
+	/*PARA LA CONFIGGURACION DEL TIMER EN MODO ENCODER USARE LOS PINES PA0 Y PA1, LOS CUALES CON AF1 SE CONCETAN AL TIMER 2*/
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	//C0NFIGURACION DE PA0
+	GPIO_EncoderInit.Pin   = GPIO_PIN_0;
+	GPIO_EncoderInit.Mode  = GPIO_MODE_AF_PP;  //se establece que se va a usar una funcion alternativa
+	GPIO_EncoderInit.Pull  = GPIO_PULLUP;   //SE FUERZA EL PULL UP PARA QUE EL PIN NO QUEDE FLOTANDO
+	GPIO_EncoderInit.Speed = GPIO_SPEED_FREQ_LOW;
+	GPIO_EncoderInit.Alternate = GPIO_AF1_TIM2;  //se configura el uso de la funcion alternatica correspondeitne a AF01, o sea TIM2_CH1
+	//se carga la configuracion
+	HAL_GPIO_Init(GPIOA, &GPIO_EncoderInit);
+
+	GPIO_EncoderInit.Pin   = GPIO_PIN_1;
+	GPIO_EncoderInit.Mode  = GPIO_MODE_AF_PP;  //se establece que se va a usar una funcion alternativa
+	GPIO_EncoderInit.Pull  = GPIO_PULLUP;  //SE ESTABLECE EN PULLUP PARA EL ENCODER NO QUEDEN EN FLOTANDO
+	GPIO_EncoderInit.Speed = GPIO_SPEED_FREQ_LOW;
+	GPIO_EncoderInit.Alternate = GPIO_AF1_TIM2;  //se configura el uso de la funcion alternatica correspondeitne a AF01, o sea TIM2_CH2
+	//se carga la configuracion
+	HAL_GPIO_Init(GPIOA, &GPIO_EncoderInit);
+
+	/*CONFIGURACION DE LA BASE DEL TIMER 2*/
+	__HAL_RCC_TIM2_CLK_ENABLE();
+
+	htim2.Instance = TIM2;
+	htim2.Init.Prescaler = 0;  // NO ES NECESARIO SETEAR EL PSC YA QUE LAS CUENTAS VIENEN DE LO QUE SE RECIBE DEL ENCODER
+	htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+	htim2.Init.Period = 99;  //SE ESTABLECE QUE SOLO SE PUEDAN CONTAR UN TOTAL DE 99 VECES, LUEGO SE REINICIA LA CUENTA
+	htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+	HAL_TIM_Base_Init(&htim2);
+
+	TIM_Encoder_InitTypeDef TIMER_Encoder = {0};
+	TIMER_Encoder.EncoderMode = TIM_ENCODERMODE_TI12;
+	TIMER_Encoder.IC1Polarity = TIM_ICPOLARITY_RISING;
+	TIMER_Encoder.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+	TIMER_Encoder.IC1Prescaler =TIM_ICPSC_DIV1;
+	TIMER_Encoder.IC1Filter = 10; //filtro para evitar rebotes EN EL ENCODER
+	TIMER_Encoder.IC2Polarity = TIM_ICPOLARITY_RISING;
+	TIMER_Encoder.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+	TIMER_Encoder.IC2Prescaler = TIM_ICPSC_DIV1;
+	TIMER_Encoder.IC2Filter = 10;
+	HAL_TIM_Encoder_Init(&htim2, &TIMER_Encoder);
+	HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_1);
+	HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_2);
+}
+
+static void ADC_Init(void){
+	/*PARA EL ADC VOY A USAR EL PIN PC5, EL CUAL TIENE ADC1_15*/
+	//SE ACTIVA RCC PC5
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+	//AHORA SE CONFIGURA EL PIN
+
+	GPIO_InitTypeDef GPIO_ADCInit = {0};
+
+	GPIO_ADCInit .Pin   = GPIO_PIN_5;
+	GPIO_ADCInit .Mode  = GPIO_MODE_ANALOG;  //SE ACTIVA EL ADC
+	GPIO_ADCInit .Pull  = GPIO_NOPULL;   //NOPULL YA QUE SE VA A RESIVIR VOLTAJE
+	//se carga la configuracion
+	HAL_GPIO_Init(GPIOC, &GPIO_ADCInit);
+
+	//ES IMPORTANTE CONFIGURAR EL TIMER YA QUE EL ADC DE VA ACONFIGURAR POR TRGO, LO QUE LO HACE NECESARIO
+	__HAL_RCC_TIM3_CLK_ENABLE();
+
+	htim3.Instance = TIM3;
+	htim3.Init.Prescaler = 15999;  //PSC CONFIGURADO PARA QUE QUEDE A 1KHZ
+	htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+	htim3.Init.Period = 19;  //1KHZ = 1 ms  POR 19 DE ARR DA UN PERIODO DE 20 ms COMO LO ESTABLECE LA RUBRICA
+	htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+
+	HAL_TIM_Base_Init(&htim3);
+
+	//EN ESTA ESTRUCUTURA SE DEFINE CUAL VA A SER LA SALIDA DEL TRIGGER TRGO
+	TIM_MasterConfigTypeDef Trigger = {0};
+	Trigger.MasterOutputTrigger = TIM_TRGO_UPDATE;
+	Trigger.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+	HAL_TIMEx_MasterConfigSynchronization(&htim3, &Trigger);
+
+	HAL_TIM_Base_Start(&htim3);
+
+	//CONFIGURACION DEL ADC
+	//SE ENCIENDE LA SEÑAL DE RELOJ DEL PERISFERICO
+	__HAL_RCC_ADC1_CLK_ENABLE();
+
+	hadc1.Instance = ADC1;
+	hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2; //LOS 16MHZ DEL SISTMEA SE DIVIDEN EN 2 PARA QUE LA COMUNIACACION INTERNA SE HAGA EN 8 MHZ
+	hadc1.Init.Resolution = ADC_RESOLUTION_12B; //la resolucion del adc se establece en 12 birs 4096 divisiones
+	hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+	hadc1.Init.ScanConvMode =  DISABLE;
+	hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+	hadc1.Init.ContinuousConvMode = DISABLE;
+	hadc1.Init.NbrOfConversion = 1;
+	hadc1.Init.ExternalTrigConv  =  ADC_EXTERNALTRIGCONV_T3_TRGO;
+	hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;  //SE ESCUCHA EL DISPARO EN EL FLANCO DE SUBIDA
+	hadc1.Init.DiscontinuousConvMode = DISABLE;
+	hadc1.Init.DMAContinuousRequests = DISABLE;
+
+
+
+	HAL_ADC_Init(&hadc1);
+
+	ADC_ChannelConfTypeDef ADC_Config = {0};
+	ADC_Config.Channel = ADC_CHANNEL_15;   //EL PC5 usa ADC1_ CH15
+	ADC_Config.Rank = 1;  //SOLAMENTE ESTOY USANDO UN CANAL
+	ADC_Config.SamplingTime = ADC_SAMPLETIME_56CYCLES; //SE ESTABLECEN 56 CICLOS
+
+	HAL_ADC_ConfigChannel(&hadc1, &ADC_Config);
+
+	//SE INICIA LA ESPERA DE INTERRUPCIONES PARA TOMAR EL DATO DE VOLTAJE
+	HAL_NVIC_EnableIRQ(ADC_IRQn);
+
+	HAL_ADC_Start_IT(&hadc1);
+
+}
+
+
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+	if (htim->Instance == TIM4)
+	{
+		HAL_GPIO_TogglePin(GPIOH, GPIO_PIN_1);  //SE CAMBIA EL ESTADO DEL PIN ENTRE HIGH Y LOW
+		mensaje=1;  // ESTA VARIABLE QUE SE ACTIVA EN 1 FUNCIONA COMO UNA BANDERA PARA EL ENVIO DE INFORMACION. ESTOY APROVECHANDO
+	}               //LA CONFIGURACION DEL TIMER 4 PARA QUE SE ENVIEN LOS DATOS A LA VELOCIDAD DE INTERRUPCION DEL TIMER. POR LO QUE LA INDICACION DE CAMBIO DE ESTADO DEL LED
+                    //NOS INDICA TAMBIEN CUANDO SE ENVIA UN DATO POR MEDIO DE TX
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef * huart){
+	/*CONFIGURACION DEL CONTROL MEDIANTE USART
+	 * EN ESTA SECCION CONFIGURAMOS LOS 4 CONTROLES NECESARIOS PARA LA TAREA.
+	 * SI DESDE EL TERMINAL EN EL PC SE OPRIME LA TECLA  " + " LA INTENSIDAD DE LA LUZ AUMENTA PROGRESIVAMENTE, POR CADA VEZ QUE SE OPRIME EL DUTY CYCLE  AUMENTA EN 1 UNIDAD DE RESOLUCION
+	 * RECORDANDO QUE SE HA CONFIGURADO EN 100 DIVISIONES.
+	 * sI SE OPRIME ÑA TECLA " - " LA INTENSIDAD DISMINUYE PROGRSIVAMENTE, DE IGUAL MANERA DISMINUYENDO EN UNA UNIDAD
+	 * SI SE OPRIME LA LETRA U EL LED SE PONDRA AL MAXIMO DUTY CYCLE POSIBLE, LO QUE SERIA TENER EL LED CONECTADO A UN PIN EN HIGH
+	 * SI SE OPIME LA LETRA D EL LED SE APAGA COMLETAMENTE YA QUE EL DUTY CYCLE SE SETEA EN 0*/
+	if (huart->Instance == USART2)  //SE VERIFICA QUE LA INTERURUPCION PROVENGA DE USAR2, QUE ES EL QUE ESTA MANEJANDO LA COMUNICACION.
+	{
+		if(RXchange == '+'){    //SE VERIFICA QUE INFORMACION NOS HA LLEGADO EN RX, LA CUAL SE ALMACENA EN RXGhange
+			if (duty < 99){    //SE PONEN FILTROS DE SEGURIDAD PARA QUE LA VARIABLE DUTY NO SALGA DEL RANGO ESTABLECIDO DE RESOLUCION 0 - 99.
+				duty += 1;     // SE REALIZA LA ACCION CORRESPONDIENTE A LA LETRA RECIBIDA
+				__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty); //SE CARGA LA INFORMACION DEL NUEVO DUTY CYCLE EN EL REGISTRO DEL CCR MEDIANTE LIBRERIA HAL
+			}
+		}
+		else if (RXchange == '-'){   //SE REDUCE EL DUTY CYCLE DEL PWM
+			if (duty > 0){
+				duty -= 1;
+				__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty);
+			}
+		}
+		else if (RXchange == 'u'){  //U DE UP
+			if (duty >= 0 && duty <= 99){
+				duty = 99;
+				__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty);        //NOTA DEBEN SER MINUSCULAS LAS LETRAS PARA FUNCIONAR
+			}
+		}
+		else if (RXchange == 'd'){   //D DE DOWN
+			if (duty >= 0 && duty <= 99){
+				duty = 0;
+				__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty);
+			}
+		}
+
+		HAL_UART_Receive_IT(&huart2, &RXchange, 1);  //SE BAJA LA BANDERA DE INTERRUPCION, ESPERANDO RECIBIR UN NUEVO DATO
+	}
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc){    // LA INTERRUPCION DEL ADC
+	if(hadc->Instance == ADC1 ){
+		raw_adc = hadc->Instance->DR;
+		duty3 = (raw_adc * 99) / 4095;          //SE CONFIGURA EL DUTY CYCLE DEL CANAL CORRESPONDIENTE EN EL VALOR DE RAW MEDIDO. SE CONFIGURA EN 100 DIVISIONES
+		__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, duty3);
+
+	}
+}
+
