@@ -38,6 +38,11 @@ void TIM3_IRQHandler(void)
 
 extern DMA_HandleTypeDef DMA_Config;
 
+extern UART_HandleTypeDef uart_Config;
+
+void UART_IRQHandler(void){
+	HAL_UART_IRQHandler(&uart_Config);
+}
 
 
 /*manejo de la interrupcion por conversion ADC
