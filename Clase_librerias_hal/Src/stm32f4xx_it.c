@@ -29,21 +29,9 @@ void TIM4_IRQHandler(void)
     HAL_TIM_IRQHandler(&htim4);
 }
 
-extern TIM_HandleTypeDef htim3;
-
-void TIM3_IRQHandler(void)
-{
-    HAL_TIM_IRQHandler(&htim4);
-}
-
 extern DMA_HandleTypeDef DMA_Config;
 
-extern UART_HandleTypeDef uart_Config;
-
-void UART_IRQHandler(void){
-	HAL_UART_IRQHandler(&uart_Config);
-}
-
+extern UART_HandleTypeDef huart2;
 
 /*manejo de la interrupcion por conversion ADC
  * las librerias HAL hacen el manejo
@@ -53,7 +41,7 @@ void UART_IRQHandler(void){
 //	HAL_ADC_IRQHandler(&hadc1);
 //}
 ///*INTERRUPCIONES POR RX UART*/
-//void USART2_IRQHandler(void)
-//{
-//	HAL_UART_IRQHandler(&huart2);
-//}
+void USART2_IRQHandler(void)
+{
+	HAL_UART_IRQHandler(&huart2);
+}
