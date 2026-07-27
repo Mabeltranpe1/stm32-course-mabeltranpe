@@ -4,6 +4,52 @@
  *  Created on: Jul 21, 2026
  *      Author: marcop
  */
+
+/* ===================== ESPECIFICACION DE LA MAQUINA DE ESTADOS =====================
+      *
+      * ESTADO PRINCIPAL:  'pantalla'  (tipo estado) -> cronometro | mpu | mco
+      * SUB-ESTADO:        'tomar_tiempo' -> solo tiene sentido dentro de cronometro
+      *                       0 = no estoy en cronometro
+      *                       1 = estoy en cronometro, aun no he tomado vuelta
+      *                       2 = estoy en cronometro y ya tome al menos una vuelta
+      *                    Arranca en 1 porque el estado inicial YA es cronometro.
+      *
+      * ----------------------- TABLA DE TRANSICIONES (Mealy) -----------------------
+      * Se evalua en actualizacion_caso(), una sola vez por cada caracter recibido.
+      *
+      *  ESTADO ORIGEN      COMANDO   ACCION DE ENTRADA                       DESTINO
+      *  -----------------  --------  --------------------------------------  ----------
+      *  cualquiera         'h'       mco1_Init('h') -> MCO1 = HSI / 4        mco
+      *  cualquiera         'l'       mco1_Init('l') -> MCO1 = LSE / 1        mco
+      *  cualquiera         'p'       mco1_Init('p') -> MCO1 = PLLCLK / 5     mco
+      *  cualquiera         'n'       (ninguna)                               mpu
+      *  mpu o mco          'r'       (ninguna: solo navega)                  cronometro
+      *  cronometro         'r'       actualizacion_cronometro():             cronometro
+      *                                 guarda la vuelta en get_time y
+      *                                 reinicia el RTC a 00:00:00
+      *  cualquiera         otro      (ninguna)                               sin cambio
+      *
+      * NOTA: 'r' es el unico comando cuyo efecto depende del estado de origen.
+      *       Por eso la maquina es Mealy en esta transicion: la salida depende
+      *       del estado actual Y de la entrada, no solo de la entrada.
+      *
+      * ------------------------- SALIDAS POR ESTADO (Moore) -------------------------
+      * Se ejecutan en graficar_pantalla(), en cada vuelta del while(1).
+      * Dependen UNICAMENTE del estado, no del comando que me trajo hasta aqui.
+      *
+      *  ESTADO       SALIDA
+      *  -----------  ----------------------------------------------------------
+      *  cronometro   Lee el RTC y dibuja "CRONOMETRO" + HH:MM:SS en curso.
+      *               Si nuevo_tiempo == 1, dibuja tambien la ultima vuelta.
+      *  mpu          actualizacion_mpu(): lee el MPU6050 por I2C y dibuja Ax/Ay/Az.
+      *               (El sensor SOLO se lee estando en este estado.)
+      *  mco          Dibuja que fuente esta saliendo por PA8, segun mco1_output.
+      *
+      * REPOSO: no hay estado IDLE. Al no llegar ningun comando, la maquina
+      *         permanece en su estado re-ejecutando su salida, que es el
+      *         comportamiento de reposo propio de una maquina de Moore.
+      * ============================================================================== */
+
 #include "stm32f4xx_hal.h"
 #include <string.h>
 #include <stdio.h>
@@ -148,12 +194,26 @@ void SSD1306_WriteString(uint8_t x, uint8_t y, char* str);
 
 
 //VARIABLES Y TEXTOS QUE SE USAN PARA REPRESENTAR EN LAS PANTALLAS
-int pantalla = 0; //VARIABLE QUE DETERMINA QUE PANTALLA SE ESTA VISUALIZANDODA
+
 uint8_t tiempo_actual[144] = {0};
-char cmo1_output = 'h';
+char mco1_output = 'h';
 char msg[128] = {0};
 uint8_t get_time[144] = {0};
 uint8_t nuevo_tiempo = 0;
+ int tomar_tiempo = 1;
+
+
+//ESTADOS DE MI MAQUINA DE ESTADOS
+//ESTA VARIABLE REPRESENTA EEN QUE ESTADO ME ENCUENTRO, Y ESTO SE TRADUCE EN QU[É PANTALLA SE ESTÁ VISUALIZANDO
+typedef enum {
+
+	cronometro,
+	mpu,
+	mco,
+
+} estado;
+
+estado pantalla = cronometro;
 
 
 //HEADERS
@@ -165,8 +225,9 @@ void mpu6050_Init(void);
 void mpu6050_Read (void);
 void mco1_Init(char);
 void graficar_pantalla(void);
-void actualization_case(uint8_t);
+void actualizacion_caso(uint8_t);
 void actualizacion_cronometro(void);
+void actualizacion_mpu(void);
 //MAIN
 int main(void){
 	HAL_Init();
@@ -176,18 +237,16 @@ int main(void){
 	i2c_init();
 	SSD1306_Init();
 	mpu6050_Init();
-	mco1_Init('p');
-	actualization_case('p');
 
 
 	while(1){
 		/*MAQUINA DE ESTADOS. EN LA PRACTICA 3 COMETÍ EL ERROR DE RESOLVER MUCHAS COSAS EN LAS IRQ
 		 * EN ESTE CODIGO EN CADA INTERRUPCION SIMPLEMENTE LEVANTARÉ UNA BANDERA QUE SE LEE EN ESTE WHILE Y SE EJECUTA LA ACCION CORRESPONDIENTE*/
-		graficar_pantalla();
 		if (huart_flag == 1){
 			huart_flag = 0;//Se baja bandera para el IRQ ya que ya se esta atendiendo la onterrupcion
-			actualization_case(RXchange);
+			actualizacion_caso(RXchange);
 		}
+		graficar_pantalla();
 
 	}
 	return 0;
@@ -284,9 +343,9 @@ static void ledok_Init(void)
 	__HAL_RCC_TIM4_CLK_ENABLE();
 	/* Configurar la base de TIM4 */
 	htim4.Instance = TIM4;
-	htim4.Init.Prescaler = 9999;  //PRESCALER SE CONFIGURA A 1KHZ
+	htim4.Init.Prescaler = 9999;  //PRESCALER SE CONFIGURA A 10KHZ
 	htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim4.Init.Period = 2490;  // EL LED PARPADEA CADA 250 ms
+	htim4.Init.Period = 2499;  // EL LED PARPADEA CADA 250 ms
 	htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 	htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 	HAL_TIM_Base_Init(&htim4);
@@ -410,7 +469,7 @@ void mpu6050_Read (void){
 		int16_t z = (int16_t)(Rec_Data[4] <<8 | Rec_Data [5]);
 
 		if (x == 0 && y==0 && z==0){
-			char str[] = "sensor en sleep mode, Waking Up .. \r\n";
+			char str[] = "sensor en modo sueño, Despertando.... \r\n";
 			HAL_UART_Transmit(&huart2,(uint8_t *)str, strlen(str), 100);
 			mpu6050_Init();
 		}
@@ -426,7 +485,7 @@ void mpu6050_Read (void){
 	}
 	else {
 		char err_msg[64];
-		int len = sprintf(err_msg, "[DEBUG] Error I2C (status=%d). Reintentando...\r\n", status);
+		int len = sprintf(err_msg, "Error I2C (status=%d). Reintentando...\r\n", status);
 		HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
 
 		// Si el bus I2C está bloqueado, se re-inicializa el periférico I2C1 de la STM32
@@ -617,26 +676,6 @@ void SSD1306_WriteString(uint8_t x, uint8_t y, char* str) {
     }
 }
 
-/*
- * SSD1306_DrawCross
- *
- * Draws a small "+" cursor centered at (x,y) — used to mark the joystick
- * position — plus a fixed rectangular frame occupying the bottom-right
- * quadrant of the screen (columns 64-127, rows 18-63), which acts as the
- * static border of the "JOYSTICK" sub-screen. The frame is redrawn every
- * call since SSD1306_Fill() clears the whole buffer each frame.
- */
-void SSD1306_DrawCross(uint8_t x, uint8_t y) {
-    // The 5 pixels of the cross: center + one neighbor in each direction.
-    // If x or y is 0, x-1/y-1 underflow to 255 (uint8_t), but SSD1306_DrawPixel's
-    // bounds check silently discards it, so this is safe.
-    SSD1306_DrawPixel(x, y, 1);
-    SSD1306_DrawPixel(x-1, y, 1);
-    SSD1306_DrawPixel(x+1, y, 1);
-    SSD1306_DrawPixel(x, y-1, 1);
-    SSD1306_DrawPixel(x, y+1, 1);
-}
-
 
 /*
  * SSD1306_DrawEmptyRect
@@ -688,7 +727,7 @@ void mco1_Init(char port){
 
 	HAL_GPIO_Init(GPIOA,&gpio_mco);
 
-	cmo1_output = port;
+	mco1_output = port;
 
 	if (port == 'h'){
 		HAL_RCC_MCOConfig (RCC_MCO1, RCC_MCO1SOURCE_HSI, RCC_MCODIV_4);
@@ -706,7 +745,7 @@ void mco1_Init(char port){
 void graficar_pantalla (void){
 
 	switch (pantalla){
-	case 0:
+	case cronometro:
 		SSD1306_Fill(0);
 
 		RTC_TimeTypeDef time_Now = {0};
@@ -715,48 +754,33 @@ void graficar_pantalla (void){
 		HAL_RTC_GetDate(&hrtc,&Date_Now, RTC_FORMAT_BIN);
 		sprintf((char *)tiempo_actual, "%02d:%02d:%02d", time_Now.Hours, time_Now.Minutes, time_Now.Seconds);
 		SSD1306_WriteString( 34, 0, "CRONOMETRO");
-		SSD1306_WriteString(20, 25, (char *)tiempo_actual);
+		SSD1306_WriteString(34, 25, (char *)tiempo_actual);
 		if (nuevo_tiempo == 1){
-			SSD1306_WriteString(20, 35, (char *)get_time);
+			SSD1306_WriteString(34, 35, (char *)get_time);
 		}
 		SSD1306_UpdateScreen();
 		break;
 
 
 
-	case 1:
+	case mpu:
 
-		mpu6050_Read();
-
-		SSD1306_Fill(0);
-
-		SSD1306_WriteString(34, 0, "ACELEROMETRO");
-
-		sprintf((char *)msg, "X:%.2f", Ax);
-		SSD1306_WriteString(10, 20, (char *)msg);
-
-		sprintf((char *)msg, "Y:%.2f", Ay);
-		SSD1306_WriteString(10, 30, (char *)msg);
-
-		sprintf((char *)msg, "Z:%.2f", Az);
-		SSD1306_WriteString(10, 40, (char *)msg);
-
-		SSD1306_UpdateScreen();
+		actualizacion_mpu();
 		break;
 
-	case 2:
+	case mco:
 		SSD1306_Fill(0);
 		SSD1306_WriteString(40, 0, "MCO1");
 
-		if (cmo1_output== 'h'){
+		if (mco1_output== 'h'){
 			SSD1306_WriteString(0, 20, "HSI: 16MHz");
 			SSD1306_WriteString(0, 30, "Div4: 4MHz");
 		}
-		else if (cmo1_output == 'l'){
+		else if (mco1_output == 'l'){
 			SSD1306_WriteString(0, 20, "LSE: 32.768KHz");
 			SSD1306_WriteString(0, 30, "Div1: 32.768KHz");
 		}
-		else if (cmo1_output == 'p'){
+		else if (mco1_output == 'p'){
 			SSD1306_WriteString(0, 20, "PLL: 100MHz");
 			SSD1306_WriteString(0, 30, "Div5: 20MHz");
 		}
@@ -768,27 +792,37 @@ void graficar_pantalla (void){
 	}
 }
 
+/*COMANDOS DE MI MAQUINA DE ESTADOS
+ * COMANDO     ACCION QUE EJECUTA    ESTADO DE DESTINO
+ * h           mco1_init('h')        mco
+ * l           mco1_init('l*)        mco
+ * p           mco1_init('p')        mco
+ * n           actualizacion_mpu()   mpu
+ * r           actualizacion_cronometro();  cronometro*/
 
 
-
-void actualization_case (uint8_t caso){
+void actualizacion_caso (uint8_t caso){
 	switch(caso){
 		case 'h': case 'p': case 'l':
+			pantalla = mco;
 			mco1_Init(caso);
+			tomar_tiempo = 0;
 			break;
 		case 'n':
-			graficar_pantalla();
-			if (pantalla < 2){
-				pantalla += 1;
-			}
-			else{
-				pantalla = 0;
-			}
+			pantalla = mpu;
+			tomar_tiempo = 0;
 			break;
 		case 'r':
-			actualizacion_cronometro();
+			if (tomar_tiempo < 2){
+				tomar_tiempo += 1;
+			}
+			pantalla = cronometro;
+			if (tomar_tiempo == 2){
+				actualizacion_cronometro();
+			}
 			break;
-		default: break;
+		default:
+			break ;
 	}
 }
 
@@ -804,6 +838,25 @@ void actualizacion_cronometro(void){
 	HAL_RTC_SetTime(&hrtc, &time_format, RTC_FORMAT_BIN);
 	HAL_RTC_SetDate(&hrtc, &date_format, RTC_FORMAT_BIN);
 
+}
+
+void actualizacion_mpu(void){
+	mpu6050_Read();
+
+	SSD1306_Fill(0);
+
+	SSD1306_WriteString(34, 0, "ACELEROMETRO");
+
+	sprintf((char *)msg, "X:%.2f", Ax);
+	SSD1306_WriteString(10, 20, (char *)msg);
+
+	sprintf((char *)msg, "Y:%.2f", Ay);
+	SSD1306_WriteString(10, 30, (char *)msg);
+
+	sprintf((char *)msg, "Z:%.2f", Az);
+	SSD1306_WriteString(10, 40, (char *)msg);
+
+	SSD1306_UpdateScreen();
 }
 /* ----------- INTERRUPCIONES -----------*/
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef * huart){
