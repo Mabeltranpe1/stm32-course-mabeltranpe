@@ -2,7 +2,8 @@
  * parcial_final.c
  *
  *  Created on: Jul 21, 2026
- *      Author: marcop
+ *      Author: Marco Antonio Beltrán Pérez
+ *      mabeltranpe@unal.edu.co
  */
 
 /* ===================== ESPECIFICACION DE LA MAQUINA DE ESTADOS =====================
@@ -82,8 +83,6 @@ uint8_t huart_flag = 0;
 #define SSD1306_ADDR 0x78
 static uint8_t SSD1306_Buffer[1024];
 
-
-#define DS1307_ADDR 0xD0
 // --- 5x7 ASCII FONT ---
 const uint8_t Font5x7[][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, // 32 Space
@@ -199,8 +198,8 @@ uint8_t tiempo_actual[144] = {0};
 char mco1_output = 'h';
 char msg[128] = {0};
 uint8_t get_time[144] = {0};
-uint8_t nuevo_tiempo = 0;
- int tomar_tiempo = 1;
+//uint8_t nuevo_tiempo = 0;
+//int tomar_tiempo = 1;
 
 
 //ESTADOS DE MI MAQUINA DE ESTADOS
@@ -212,6 +211,21 @@ typedef enum {
 	mco,
 
 } estado;
+
+typedef enum{
+	nunca_encendido,
+	ya_encendido
+}encendido;
+
+encendido nuevo_tiempo = nunca_encendido;
+
+typedef enum{
+	cambio_a_pantalla,
+	esperando_tomar_dato,
+	dato_tomado
+}crono;
+
+crono tomar_tiempo = esperando_tomar_dato;
 
 estado pantalla = cronometro;
 
@@ -265,6 +279,7 @@ static void rtc_Init(void){
 	rcc_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE | RCC_OSCILLATORTYPE_HSI;
 	rcc_OscInitStruct.LSEState = RCC_LSE_ON ;
 	rcc_OscInitStruct.HSIState = RCC_HSI_ON;
+	rcc_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
 	rcc_OscInitStruct.PLL.PLLState = RCC_PLL_ON;   //ENCIENDO EL PHASE LOCKED LOOP
 	rcc_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI; //ENLAZO PLL CON EL OSCILADOR HSI
 	rcc_OscInitStruct.PLL.PLLM = 8;  //DIVISOR DE ENTRADA. LA FRECUENCIA DE ENTRADA ES DE 16MHZ ENTONCES 16 MHZ/ 8 = 2MHZ (LA DIVISION ENTRE LA FRECUENCIA DE ENTRADA Y PLLM DEBE ESTAR ENTR 1 Y 2)
@@ -367,7 +382,7 @@ static void uart_Init(void){
 	GPIO_InitTX.Mode  = GPIO_MODE_AF_PP;  //se establece que se va a usar una funcion alternativa
 	GPIO_InitTX.Pull  = GPIO_NOPULL;  //no es necesario tener un pull ya que eso esta controlado por el USART
 	GPIO_InitTX.Speed = GPIO_SPEED_FREQ_LOW;
-	GPIO_InitTX.Alternate = GPIO_AF7_USART1;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
+	GPIO_InitTX.Alternate = GPIO_AF7_USART2;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
 	//se carga la configuracion
 	HAL_GPIO_Init(GPIOA, &GPIO_InitTX);
 
@@ -377,7 +392,7 @@ static void uart_Init(void){
 	GPIO_InitRX.Mode  = GPIO_MODE_AF_PP;
 	GPIO_InitRX.Pull  = GPIO_NOPULL;
 	GPIO_InitRX.Speed = GPIO_SPEED_FREQ_LOW;
-	GPIO_InitRX.Alternate = GPIO_AF7_USART1;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
+	GPIO_InitRX.Alternate = GPIO_AF7_USART2;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
 
 	HAL_GPIO_Init(GPIOA, &GPIO_InitRX);
 
@@ -694,23 +709,6 @@ void SSD1306_WriteString(uint8_t x, uint8_t y, char* str) {
  * drew both the "top" and "bottom" edge on the same row 20 — hence only one
  * line was visible instead of a square.
  */
-void SSD1306_DrawEmptyRect(uint8_t x_zero, uint8_t y_zero, uint8_t x_wide, uint8_t y_height) {
-	uint8_t x_end = x_zero + x_wide;    // right edge column = left edge + width
-	uint8_t y_end = y_zero + y_height;  // bottom edge row   = top edge + height
-
-	// Top border (row y_zero) and bottom border (row y_end), from column x_zero to x_end
-    for(int i = x_zero; i <= x_end; i++) {
-    	SSD1306_DrawPixel(i, y_zero, 1); // Top limit
-    	SSD1306_DrawPixel(i, y_end, 1);  // Bottom limit
-    }
-
-    // Left border (column x_zero) and right border (column x_end), from row y_zero to y_end
-    for(int i = y_zero; i <= y_end; i++) {
-    	SSD1306_DrawPixel(x_zero, i, 1);
-    	SSD1306_DrawPixel(x_end, i, 1);
-    }
-
-}
 
 void mco1_Init(char port){
 
@@ -755,7 +753,7 @@ void graficar_pantalla (void){
 		sprintf((char *)tiempo_actual, "%02d:%02d:%02d", time_Now.Hours, time_Now.Minutes, time_Now.Seconds);
 		SSD1306_WriteString( 34, 0, "CRONOMETRO");
 		SSD1306_WriteString(34, 25, (char *)tiempo_actual);
-		if (nuevo_tiempo == 1){
+		if (nuevo_tiempo == ya_encendido){
 			SSD1306_WriteString(34, 35, (char *)get_time);
 		}
 		SSD1306_UpdateScreen();
@@ -793,12 +791,14 @@ void graficar_pantalla (void){
 }
 
 /*COMANDOS DE MI MAQUINA DE ESTADOS
- * COMANDO     ACCION QUE EJECUTA    ESTADO DE DESTINO
- * h           mco1_init('h')        mco
- * l           mco1_init('l*)        mco
- * p           mco1_init('p')        mco
- * n           actualizacion_mpu()   mpu
- * r           actualizacion_cronometro();  cronometro*/
+ * ESTADO ORIGEN   COMANDO   ACCION QUE EJECUTA          ESTADO DE DESTINO
+ * cualquiera      h         mco1_Init('h')              mco
+ * cualquiera      l         mco1_Init('l')              mco
+ * cualquiera      p         mco1_Init('p')              mco
+ * cualquiera      n         ninguna                     mpu
+ * mpu o mco       r         ninguna (solo navega)       cronometro
+ * cronometro      r         actualizacion_cronometro()  cronometro
+ * cualquiera      otro      ninguna                     sin cambio          */
 
 
 void actualizacion_caso (uint8_t caso){
@@ -806,18 +806,22 @@ void actualizacion_caso (uint8_t caso){
 		case 'h': case 'p': case 'l':
 			pantalla = mco;
 			mco1_Init(caso);
-			tomar_tiempo = 0;
+			tomar_tiempo = cambio_a_pantalla;
 			break;
 		case 'n':
 			pantalla = mpu;
-			tomar_tiempo = 0;
+			tomar_tiempo = cambio_a_pantalla;
 			break;
 		case 'r':
-			if (tomar_tiempo < 2){
-				tomar_tiempo += 1;
+
+			if (tomar_tiempo == cambio_a_pantalla){
+				tomar_tiempo = esperando_tomar_dato;
+			}
+			else if (tomar_tiempo == esperando_tomar_dato){
+				tomar_tiempo = dato_tomado;
 			}
 			pantalla = cronometro;
-			if (tomar_tiempo == 2){
+			if (tomar_tiempo == dato_tomado){
 				actualizacion_cronometro();
 			}
 			break;
@@ -827,7 +831,7 @@ void actualizacion_caso (uint8_t caso){
 }
 
 void actualizacion_cronometro(void){
-	nuevo_tiempo = 1;   //ESTA BANDERA ME DICE QUE YA SE HA OPRIMIDO R AL MENOS UNA VES, NUNCA VUELVO A BAJAR LA BANDERA YA QUE SIEMPRE QUIERO QUE SE MUESTRE EL TIEMPO QUE YA HE TOMADO ANTES
+	nuevo_tiempo = ya_encendido;   //ESTA BANDERA ME DICE QUE YA SE HA OPRIMIDO R AL MENOS UNA VES, NUNCA VUELVO A BAJAR LA BANDERA YA QUE SIEMPRE QUIERO QUE SE MUESTRE EL TIEMPO QUE YA HE TOMADO ANTES
 	RTC_TimeTypeDef time_Now = {0};
 	RTC_DateTypeDef Date_Now = {0};
 	HAL_RTC_GetTime(&hrtc,&time_Now, RTC_FORMAT_BIN);

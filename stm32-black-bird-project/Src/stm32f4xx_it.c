@@ -9,6 +9,9 @@
 
 #include "stm32f4xx_hal.h"
 
+
+extern TIM_HandleTypeDef htim4;
+extern
 /*
  * SysTick: es la base de tiempo del HAL.
  * HAL_Delay() y todos los timeouts internos del HAL dependen de que
@@ -19,6 +22,17 @@ void SysTick_Handler(void)
     HAL_IncTick();
 }
 
+void TIM4_IRQHandler(void)
+{
+    HAL_TIM_IRQHandler(&htim4);
+}
+
+extern UART_HandleTypeDef huart2;
+
+void USART2_IRQHandler(void)
+{
+	HAL_UART_IRQHandler(&huart2);
+}
 /*
  * A partir de aqui: tus ISR.
  *
@@ -33,3 +47,4 @@ void SysTick_Handler(void)
  * Si prefieres manejar el periferico a registro, escribe la ISR completa
  * aqui igual que lo venias haciendo (leer bandera -> limpiarla -> avisar a main).
  */
+
