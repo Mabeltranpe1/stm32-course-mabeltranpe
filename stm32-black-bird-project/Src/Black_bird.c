@@ -27,12 +27,15 @@
 #define PRESS_LSB_REG 0xF8
 #define PRESS_XLSB_REG 0xF9
 
-uint16_t duty_aleron_izq= 1500;
-uint16_t duty_aleron_der= 1500;
-uint16_t duty_elevador = 1500;
+uint16_t duty_aleron_der= 1500; //EL DUTY DE CADA PWM USADO EN CADA SUPERFICIE. SE INICIALIZA EN 1500 (1.5 MS) YA QUE ES EL VALOR CENTRAL DEL SERVO MOTOR)
+uint16_t duty_aleron_izq = 1500;
 uint16_t duty_timon = 1500;
+uint16_t duty_elevador = 1500;
 uint16_t duty_motor = 0;
+
 uint8_t tipo_tecla_oprimida = 0; //variable para definir que ha llegado por serial y a que maquina de estados debe entrar
+uint16_t delta_servo = 0;
+uint8_t BANDERA_MOVIMIENTO = 0;
 
 uint16_t duty_esc = 1000;
 volatile uint8_t dato_recibido = 0;
@@ -104,6 +107,10 @@ int main(void){
 			dato_recibido = 0;
 			cambio_fsm(RXchange);
 			modo_seteado(modo_de_operacion);
+		}
+		if (BANDERA_MOVIMIENTO == 1){
+			BANDERA_MOVIMIENTO = 0;
+
 		}
 
 	}
@@ -205,7 +212,6 @@ void pwm_Init(void){
 	motores_InitStruct.Alternate = GPIO_AF2_TIM3;
 	HAL_GPIO_Init(GPIOC, &motores_InitStruct);
 
-
 	motores_InitStruct.Pin = GPIO_PIN_0;
 	motores_InitStruct.Mode = GPIO_MODE_AF_PP;         //INICIO PIN PA8
 	motores_InitStruct.Pull = GPIO_NOPULL;
@@ -257,6 +263,11 @@ void pwm_Init(void){
 	HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_3);
 	HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_4);
 	HAL_TIM_PWM_Start(&htim2,TIM_CHANNEL_1);
+	HAL_TIM_Base_Start_IT(&htim3);
+	HAL_NVIC_EnableIRQ(TIM3_IRQn);
+	HAL_TIM_Base_Start_IT(&htim2);
+	/* Habilitar la línea de interrupción de TIM4 en el NVIC */
+	HAL_NVIC_EnableIRQ(TIM2_IRQn);
 
 }
 
@@ -451,21 +462,27 @@ void modo_seteado(uint8_t modo_de_operacion){
 		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
 		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
 		__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
+		delta_servo = 50;
 		tipo_tecla_oprimida = 0;
 		break;
 	case ARMADO:
 		tipo_tecla_oprimida = 0;
+		delta_servo = 50;
 		break;
 	case TAKE_OFF:
+		delta_servo = 50;
 		tipo_tecla_oprimida = 0;
 		break;
 	case CRUISE:
+		delta_servo = 20;
 		tipo_tecla_oprimida = 0;
 		break;
 	case LANDING:
+		delta_servo = 25;
 		tipo_tecla_oprimida = 0;
 		break;
 	case FAIL_SAFE:
+		delta_servo = 20;
 		tipo_tecla_oprimida = 0;
 		break;
 	default:
@@ -476,21 +493,41 @@ void modo_seteado(uint8_t modo_de_operacion){
 void movimiento(uint8_t superficie_controlada){
 	switch(superficie_controlada){
 	case ALERON_IZQ:
+		if (duty_aleron_izq < 2000){
+			duty_aleron_izq += delta_servo;
+			duty_aleron_der -= delta_servo;
+		}
 		//tipo_tecla_oprimida = 0;
 		break;
 	case ALERON_DER:
+		if (duty_aleron_der < 2000){
+			duty_aleron_izq -= delta_servo;
+			duty_aleron_der += delta_servo;
+		}
 		//tipo_tecla_oprimida = 0;
 		break;
 	case ELEVADOR_ARR:
+		if (duty_elevador < 2000){
+			duty_elevador += delta_servo;
+		}
 		//tipo_tecla_oprimida = 0;
 		break;
 	case ELEVADOR_ABJ:
+		if (duty_elevador> 1000){
+			duty_elevador -= delta_servo;
+		}
 		//tipo_tecla_oprimida = 0;
 		break;
 	case TIMON_IZQ:
+		if (duty_timon < 2000){
+			duty_timon += delta_servo;
+		}
 		//tipo_tecla_oprimida = 0;
 		break;
 	case TIMON_DER:
+		if (duty_timon > 1000){
+			duty_timon -= delta_servo;
+		}
 		//tipo_tecla_oprimida = 0;
 		break;
 	default:
@@ -532,6 +569,8 @@ void cambio_fsm (uint8_t tecla_oprimida){
 	}
 }
 
+
+
 //INTERRUPCIONES
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -540,7 +579,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);  //SE CAMBIA EL ESTADO DEL PIN ENTRE HIGH Y LOW
 
 	}
+
+	if (htim->Instance == TIM3)
+	{
+		BANDERA_MOVIMIENTO = 1;
+	}
 }
+
+
 
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef * huart){
