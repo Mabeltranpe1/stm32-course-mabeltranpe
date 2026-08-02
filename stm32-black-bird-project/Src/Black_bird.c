@@ -10,25 +10,81 @@
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#include <stdio.h>
 
 
 //VARIABLES
-uint16_t duty_servos = 1500;
+//DEFINICIONES PARA EL MPU
+#define WHOAMI (0x68 << 1)
+#define SMPLRT_DIV_REG 0x19
+#define ACCEL_CONFIG_REG 0x1C
+#define PWR_MGMT_1_REG 0x6B
+#define ACCEL_XOUT_H_REG 0x3B
+//DEFINICIONES PARA E BMP
+#define BMP_ADDR (0x76 << 1)
+#define BMP_ID 0xD0
+#define PRESS_MSB_REG 0XF7
+#define PRESS_LSB_REG 0xF8
+#define PRESS_XLSB_REG 0xF9
+
+uint16_t duty_aleron_izq= 1500;
+uint16_t duty_aleron_der= 1500;
+uint16_t duty_elevador = 1500;
+uint16_t duty_timon = 1500;
+uint16_t duty_motor = 0;
+uint8_t tipo_tecla_oprimida = 0; //variable para definir que ha llegado por serial y a que maquina de estados debe entrar
+
 uint16_t duty_esc = 1000;
-uint8_t dato_recibido = 0;
-int RXchange = 0;
+volatile uint8_t dato_recibido = 0;
+volatile uint8_t RXchange = 0;
+
+int16_t Accel_X_raw, Accel_Y_raw, Accel_Z_raw;
+float Ax, Ay, Az;
 /*----typedef------*/
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 UART_HandleTypeDef huart2;
+I2C_HandleTypeDef hi2c;
 //HEADERS
 static void clk_Init(void);
 void ledok_Init(void);
 void pwm_Init(void);
-void uart_Init(void);
+static void uart_Init(void);
+void i2c_init(void);
+void mpu6050_Init(void);
+void mpu6050_Read (void);
+void bmp280_Read (void);
+void modo_seteado (uint8_t modo_de_operacion);
+void movimiento(uint8_t superficie_controlada);
+void avion_Init(void);
+void cambio_fsm(uint8_t tecla_oprimida);
+//ESTADOS
+//
+typedef enum {
+	NO_ARMADO ,
+	ARMADO ,
+	TAKE_OFF ,
+	CRUISE ,
+	LANDING,
+	FAIL_SAFE
+} operacion;
+
+typedef enum{
+	ESPERANDO_CONTROL = 0,
+	ALERON_IZQ = 'a',
+	ALERON_DER = 'd',
+	ELEVADOR_ARR = 's',
+	ELEVADOR_ABJ = 'w',
+	TIMON_IZQ = 'j',
+	TIMON_DER = 'l',
+}control;
+
+operacion modo_de_operacion = NO_ARMADO;
+control superficie = ESPERANDO_CONTROL;
 
 //MAIN
+
 int main(void){
 
 	HAL_Init();
@@ -36,10 +92,20 @@ int main(void){
 	ledok_Init();
 	pwm_Init();
 	uart_Init();
+	//i2c_init();
+	//bmp280_Read();
+	//mpu6050_Init();
+	//mpu6050_Read();
+	avion_Init();
+
 	while(1){
+
 		if (dato_recibido == 1){
 			dato_recibido = 0;
+			cambio_fsm(RXchange);
+			modo_seteado(modo_de_operacion);
 		}
+
 	}
 }
 static void clk_Init(void){
@@ -146,17 +212,7 @@ void pwm_Init(void){
 	motores_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	motores_InitStruct.Alternate = GPIO_AF1_TIM2;
 	HAL_GPIO_Init(GPIOA, &motores_InitStruct);
-	/*AHORA SIGUE INICIAR EL TIMER2 y TIMER3 QUE ES EL TIMER QUE CONTROLA ESTOS PINES,
-	 * Y POR MEDIO DE LOS CANALES DE ESTE TIMER SE HARÁ EL CONTROL DE LOS SERVOS*/
-/*
 
-	 * ESTO SE PUEDE HACER DEBIDO A QUE CADA PWM COMPARTEN TODOS LA MISMA FRECUENCIA
-	 * LO QUE CAMBIA ES EL DUTY CYCLE
-	 * CH1 ASOCIADO A PC6
-	 * CH2 ASOCIADO A PC7
-	 * CH3 ASOCIADO A PC8
-	 * CH3 ASOCIADO A PC9
-	 * TIM3 CH1 ASOCIADO A PA0*/
 	__HAL_RCC_TIM2_CLK_ENABLE();
 	__HAL_RCC_TIM3_CLK_ENABLE();
 	/* CONFIGURACION DE LA BASE DEL TIMER 1 A 5KHZ*/
@@ -180,7 +236,7 @@ void pwm_Init(void){
 	TIM_OC_InitTypeDef servos_Config = {0};
 	TIM_OC_InitTypeDef esc_Config = {0};
 	servos_Config.OCMode = TIM_OCMODE_PWM1;
-	servos_Config.Pulse = duty_servos;
+	servos_Config.Pulse = 0;
 	servos_Config.OCPolarity = TIM_OCPOLARITY_HIGH;
 	servos_Config.OCFastMode = TIM_OCFAST_DISABLE;
 	servos_Config.OCIdleState = TIM_OCIDLESTATE_RESET;
@@ -249,6 +305,233 @@ static void uart_Init(void){
 
 }
 
+void i2c_init(void){
+
+	__HAL_RCC_I2C1_CLK_ENABLE();
+
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+
+	GPIO_InitTypeDef GPIO_Init = {0};
+
+	//PB8 --> SCL
+	//PB9 --> SDA
+
+	GPIO_Init.Pin =  GPIO_PIN_8 | GPIO_PIN_9;  //CONFIGURACION DE PINES DE SDA(PB7) Y SCL(PB6)
+	GPIO_Init.Mode = GPIO_MODE_AF_OD;
+	GPIO_Init.Pull = GPIO_NOPULL;
+	GPIO_Init.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+	GPIO_Init.Alternate = GPIO_AF4_I2C1;
+
+	HAL_GPIO_Init(GPIOB, &GPIO_Init);
+
+
+	//configuracion del I2C
+
+	hi2c.Instance = I2C1;
+	//velocidad de transmicion estandar
+	hi2c.Init.ClockSpeed = 100000;
+	hi2c.Init.DutyCycle = I2C_DUTYCYCLE_2;
+	hi2c.Init.OwnAddress1 = 0;
+	hi2c.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+	hi2c.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+	hi2c.Init.OwnAddress2 = 0;
+	hi2c.Init.GeneralCallMode =I2C_GENERALCALL_DISABLED;
+	hi2c.Init.NoStretchMode = I2C_NOSTRETCH_DISABLED;
+
+	HAL_I2C_Init(&hi2c);
+
+
+
+}
+
+void mpu6050_Init(void){
+	uint8_t Data;
+
+	Data = 0x00;
+
+	HAL_I2C_Mem_Write(&hi2c,WHOAMI, PWR_MGMT_1_REG, 1, &Data, 1, 100);
+
+	Data = 0x07;
+
+	HAL_I2C_Mem_Write(&hi2c,WHOAMI, SMPLRT_DIV_REG, 1, &Data, 1, 100);
+
+	Data  =  0x00;
+
+	HAL_I2C_Mem_Write(&hi2c,WHOAMI, ACCEL_CONFIG_REG, 1, &Data, 1, 100);
+
+}
+
+void mpu6050_Read (void){
+
+	uint8_t Rec_Data [6];
+	HAL_StatusTypeDef status;
+
+	//TIME OUT A 100MS PARA EVITAR QUE SE CONGELE POR MUCHO TIEMPO SI SE DESCONECTA
+	status = HAL_I2C_Mem_Read(&hi2c, WHOAMI, ACCEL_XOUT_H_REG, 1, Rec_Data, 6 ,100 );
+
+	if (status == HAL_OK){
+
+		int16_t x = (int16_t)(Rec_Data[0] <<8 | Rec_Data [1]);
+		int16_t y = (int16_t)(Rec_Data[2] <<8 | Rec_Data [3]);
+		int16_t z = (int16_t)(Rec_Data[4] <<8 | Rec_Data [5]);
+
+		if (x == 0 && y==0 && z==0){
+			char str[] = "sensor en modo sueño, Despertando.... \r\n";
+			HAL_UART_Transmit(&huart2,(uint8_t *)str, strlen(str), 100);
+			mpu6050_Init();
+		}
+		else{
+			Accel_X_raw = x;
+			Accel_Y_raw = y;
+			Accel_Z_raw = z;
+
+			Ax = Accel_X_raw / 16384.0;
+			Ay = Accel_Y_raw / 16384.0;
+			Az = Accel_Z_raw / 16384.0;
+		}
+	}
+	else {
+		char err_msg[64];
+		int len = sprintf(err_msg, "Error I2C (status=%d). Reintentando...\r\n", status);
+		HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
+
+		// Si el bus I2C está bloqueado, se re-inicializa el periférico I2C1 de la STM32
+		if (status == HAL_BUSY) {
+			HAL_I2C_DeInit(&hi2c);
+			HAL_I2C_Init(&hi2c);
+		}
+
+		mpu6050_Init();
+
+	}
+}
+
+void bmp280_Read(void){
+
+	uint8_t Rec_Data [1];
+	HAL_StatusTypeDef status;
+
+	status = HAL_I2C_Mem_Read(&hi2c, BMP_ADDR, BMP_ID, 1, Rec_Data, 1 ,100 );
+
+	if (status == HAL_OK){
+		if (Rec_Data[0] == 0x58){
+			char msg[]="esta bien";
+			HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+		}
+		else {
+			char err_msg[64];
+			int len = sprintf(err_msg, "Error I2C (status=%d). Reintentando...\r\n", status);
+			HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
+		}
+	}
+	else {
+		char err_msg[64];
+		int len = sprintf(err_msg, "Error I2C (status=%d). Reintentando...\r\n", status);
+		HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
+
+		// Si el bus I2C está bloqueado, se re-inicializa el periférico I2C1 de la STM32
+		if (status == HAL_BUSY) {
+			HAL_I2C_DeInit(&hi2c);
+			HAL_I2C_Init(&hi2c);
+		}
+	}
+}
+
+void avion_Init(void){
+
+	modo_seteado(modo_de_operacion);
+
+}
+
+void modo_seteado(uint8_t modo_de_operacion){
+	switch(modo_de_operacion){
+	case NO_ARMADO:
+		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, duty_aleron_izq);
+		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, duty_aleron_der);
+		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
+		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+		__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
+		tipo_tecla_oprimida = 0;
+		break;
+	case ARMADO:
+		tipo_tecla_oprimida = 0;
+		break;
+	case TAKE_OFF:
+		tipo_tecla_oprimida = 0;
+		break;
+	case CRUISE:
+		tipo_tecla_oprimida = 0;
+		break;
+	case LANDING:
+		tipo_tecla_oprimida = 0;
+		break;
+	case FAIL_SAFE:
+		tipo_tecla_oprimida = 0;
+		break;
+	default:
+		break;
+	}
+}
+
+void movimiento(uint8_t superficie_controlada){
+	switch(superficie_controlada){
+	case ALERON_IZQ:
+		//tipo_tecla_oprimida = 0;
+		break;
+	case ALERON_DER:
+		//tipo_tecla_oprimida = 0;
+		break;
+	case ELEVADOR_ARR:
+		//tipo_tecla_oprimida = 0;
+		break;
+	case ELEVADOR_ABJ:
+		//tipo_tecla_oprimida = 0;
+		break;
+	case TIMON_IZQ:
+		//tipo_tecla_oprimida = 0;
+		break;
+	case TIMON_DER:
+		//tipo_tecla_oprimida = 0;
+		break;
+	default:
+		break;
+
+	}
+}
+
+void cambio_fsm (uint8_t tecla_oprimida){
+	switch (tecla_oprimida){
+	case 'a': case 'd': case'w': case's': case'l' : case'j':
+		superficie = tecla_oprimida;
+		break;
+
+	/*
+	 * p armed
+	 * o landing
+	 * i cruise
+	 * u take off
+	 * ' ' disarmed*/
+
+	case 'p':
+		modo_de_operacion = ARMADO;
+		break;
+	case 'o':
+		modo_de_operacion = LANDING;
+		break;
+	case 'i':
+		modo_de_operacion = TAKE_OFF;
+		break;
+	case'u':
+		modo_de_operacion = CRUISE;
+		break;
+	case' ':
+		modo_de_operacion = NO_ARMADO;
+		break;
+	default:
+		break;
+	}
+}
+
 //INTERRUPCIONES
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -259,17 +542,30 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	}
 }
 
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef * huart){
-	/*CONFIGURACION DEL CONTROL MEDIANTE USART
-	 * EN ESTA SECCION CONFIGURAMOS LOS 4 CONTROLES NECESARIOS PARA LA TAREA.
-	 * SI DESDE EL TERMINAL EN EL PC SE OPRIME LA TECLA  " + " LA INTENSIDAD DE LA LUZ AUMENTA PROGRESIVAMENTE, POR CADA VEZ QUE SE OPRIME EL DUTY CYCLE  AUMENTA EN 1 UNIDAD DE RESOLUCION
-	 * RECORDANDO QUE SE HA CONFIGURADO EN 100 DIVISIONES.
-	 * sI SE OPRIME ÑA TECLA " - " LA INTENSIDAD DISMINUYE PROGRSIVAMENTE, DE IGUAL MANERA DISMINUYENDO EN UNA UNIDAD
-	 * SI SE OPRIME LA LETRA U EL LED SE PONDRA AL MAXIMO DUTY CYCLE POSIBLE, LO QUE SERIA TENER EL LED CONECTADO A UN PIN EN HIGH
-	 * SI SE OPIME LA LETRA D EL LED SE APAGA COMLETAMENTE YA QUE EL DUTY CYCLE SE SETEA EN 0*/
-	if (huart->Instance == huart2)  //SE VERIFICA QUE LA INTERURUPCION PROVENGA DE USAR2, QUE ES EL QUE ESTA MANEJANDO LA COMUNICACION.
-	{
-		dato_recibido = 1;
+	if (huart->Instance == USART2){
+		dato_recibido = 1;  //SE ACTIVA UNA BANDERA PARA QUE LA LOGICA FUERTE SE EJECUTE DENTRO DEL MAIN Y NO EN LA INTERRUPCION
+		HAL_UART_Receive_IT(huart, &RXchange, 1);  //SE BAJA LA BANDERA ESPERANDO QUE HAYA UNA NUEVA INTERRUPCION
 	}
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart){
+
+    if (huart->Instance == USART2){          //
+
+        if (huart->ErrorCode  & HAL_UART_ERROR_ORE){
+            // subir contador de overrun
+        }
+        if (huart->ErrorCode  & HAL_UART_ERROR_NE){
+            // subir contador de ruido
+        }
+        if (huart->ErrorCode  & HAL_UART_ERROR_FE){
+            // subir contador de trama
+        }
+        __HAL_UART_CLEAR_PEFLAG(huart);
+        HAL_UART_Receive_IT(huart, &RXchange, 1);// limpiar banderas      → macro de la familia __HAL_UART_CLEAR_
+        // rearmar recepción     → la misma llamada que tienes en uart_Init()
+    }
 }
 
