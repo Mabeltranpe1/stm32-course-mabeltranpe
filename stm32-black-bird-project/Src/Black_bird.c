@@ -35,11 +35,12 @@ uint16_t duty_motor = 0;
 
 uint8_t tipo_tecla_oprimida = 0; //variable para definir que ha llegado por serial y a que maquina de estados debe entrar
 uint16_t delta_servo = 0;
-uint8_t BANDERA_MOVIMIENTO = 0;
+
 
 uint16_t duty_esc = 1000;
 volatile uint8_t dato_recibido = 0;
 volatile uint8_t RXchange = 0;
+volatile uint8_t BANDERA_MOVIMIENTO = 0;
 
 int16_t Accel_X_raw, Accel_Y_raw, Accel_Z_raw;
 float Ax, Ay, Az;
@@ -59,7 +60,7 @@ void mpu6050_Init(void);
 void mpu6050_Read (void);
 void bmp280_Read (void);
 void modo_seteado (uint8_t modo_de_operacion);
-void movimiento(uint8_t superficie_controlada);
+void movimiento(void);
 void avion_Init(void);
 void cambio_fsm(uint8_t tecla_oprimida);
 //ESTADOS
@@ -82,6 +83,26 @@ typedef enum{
 	TIMON_IZQ = 'j',
 	TIMON_DER = 'l',
 }control;
+
+typedef enum{
+	POSITIVO,
+	NEGATIVO,
+	CENTRO
+}posicion;
+
+posicion pitch  = CENTRO;
+posicion roll = CENTRO;
+posicion yaw = CENTRO;
+
+uint32_t timeout_pitch = 0;
+uint32_t timeout_roll = 0;
+uint32_t timeout_yaw = 0;
+
+uint16_t reposo_roll_izq = 0;
+uint16_t reposo_roll_der = 0;
+uint16_t reposo_pitch = 0;
+uint16_t reposo_yaw = 0;
+
 
 operacion modo_de_operacion = NO_ARMADO;
 control superficie = ESPERANDO_CONTROL;
@@ -110,6 +131,7 @@ int main(void){
 		}
 		if (BANDERA_MOVIMIENTO == 1){
 			BANDERA_MOVIMIENTO = 0;
+			movimiento();
 
 		}
 
@@ -457,11 +479,6 @@ void avion_Init(void){
 void modo_seteado(uint8_t modo_de_operacion){
 	switch(modo_de_operacion){
 	case NO_ARMADO:
-		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, duty_aleron_izq);
-		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, duty_aleron_der);
-		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
-		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
-		__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
 		delta_servo = 50;
 		tipo_tecla_oprimida = 0;
 		break;
@@ -490,64 +507,220 @@ void modo_seteado(uint8_t modo_de_operacion){
 	}
 }
 
-void movimiento(uint8_t superficie_controlada){
-	switch(superficie_controlada){
-	case ALERON_IZQ:
-		if (duty_aleron_izq < 2000){
-			duty_aleron_izq += delta_servo;
-			duty_aleron_der -= delta_servo;
-		}
-		//tipo_tecla_oprimida = 0;
+void movimiento(void){
+
+	if (HAL_GetTick() -timeout_pitch > 60){
+		pitch = CENTRO;
+	}
+	if (HAL_GetTick() -timeout_roll > 60){
+			roll = CENTRO;
+	}
+	if (HAL_GetTick() -timeout_yaw > 60){
+			yaw = CENTRO;
+	}
+	/*EN QUE CASO SE HABILITA O DESHABILITA ALGO?
+	 * CUANDO SE SETEA UNO DE LOS EJES A CENTRO ES PORQUE
+	 * QUEREMOS EVITAR QUE AL PASAR DE UN ESTADO QUE TIENE LA POSICION DE LOS CONTROLES FIJOS A UN ESTADO QUE PERMITE CAMBIARLOS
+	 * PARTA DE UN ESTADO INICIAL CENTRAL. DE ESTA MANERA LAS TRANSICIONES NO SON BRUSCAS.
+	 * LOS ESTADOS DE REPOSO TIENEN LIJERAS DEFLECTACIONES PARA PERMITIR QUE EL ALA SUSTENTE MAS A MAS BAJA VELOCIDAD*/
+	switch (modo_de_operacion){
+	case NO_ARMADO:
+		reposo_pitch = 1500;
+		reposo_roll_der = 1500;
+		reposo_roll_izq = 1500;
+		reposo_yaw = 1500;
 		break;
-	case ALERON_DER:
-		if (duty_aleron_der < 2000){
-			duty_aleron_izq -= delta_servo;
-			duty_aleron_der += delta_servo;
-		}
-		//tipo_tecla_oprimida = 0;
+	case ARMADO:
+		reposo_pitch = 1500;
+		reposo_roll_der = 1500;
+		reposo_roll_izq = 1500;
+		reposo_yaw = 1500;
 		break;
-	case ELEVADOR_ARR:
-		if (duty_elevador < 2000){
-			duty_elevador += delta_servo;
-		}
-		//tipo_tecla_oprimida = 0;
+	case TAKE_OFF:
+		roll = CENTRO;
+		reposo_roll_izq = 1700;
+		reposo_roll_der = 1300;
 		break;
-	case ELEVADOR_ABJ:
-		if (duty_elevador> 1000){
-			duty_elevador -= delta_servo;
-		}
-		//tipo_tecla_oprimida = 0;
+	case CRUISE:
+		reposo_pitch = 1500;
+		reposo_roll_der = 1500;
+		reposo_roll_izq = 1500;
+		reposo_yaw = 1500;
 		break;
-	case TIMON_IZQ:
-		if (duty_timon < 2000){
-			duty_timon += delta_servo;
-		}
-		//tipo_tecla_oprimida = 0;
+	case LANDING:
+		roll = CENTRO;
+		reposo_roll_izq = 1700;
+		reposo_roll_der = 1300;
 		break;
-	case TIMON_DER:
-		if (duty_timon > 1000){
-			duty_timon -= delta_servo;
-		}
-		//tipo_tecla_oprimida = 0;
+
+	case FAIL_SAFE:
+		roll = CENTRO;
+		pitch = CENTRO;
+		yaw = CENTRO;
+		reposo_pitch = 1500;
+		reposo_roll_der = 1500;
+		reposo_roll_izq = 1500;
+		reposo_yaw = 1500;
 		break;
 	default:
 		break;
+	}
+		//ALABEO
+	switch (roll){
+	case POSITIVO:
+		if (duty_aleron_der < 2000){
+			duty_aleron_der += delta_servo;
+			duty_aleron_izq -= delta_servo;
+		}
+		break;
+	case NEGATIVO:
+		if (duty_aleron_der > 1000){
+			duty_aleron_izq += delta_servo;
+			duty_aleron_der -= delta_servo;
+		}
+		break;
+	case CENTRO:
+		if (duty_aleron_der > reposo_roll_der){
+			duty_aleron_izq += delta_servo;
+			duty_aleron_der -= delta_servo;
+		}
+		else if (duty_aleron_der < reposo_roll_der){
+			duty_aleron_der += delta_servo;
+			duty_aleron_izq -= delta_servo;
+
+		}
+		break;
 
 	}
+
+	//CABECEO
+	switch(pitch){
+	case POSITIVO:
+		if (duty_elevador < 2000){
+			duty_elevador += delta_servo;
+		}
+		break;
+	case NEGATIVO:
+		if (duty_elevador > 1000){
+			duty_elevador -= delta_servo;
+		}
+		break;
+	case CENTRO:
+		if (duty_elevador > reposo_pitch){
+			duty_elevador -= delta_servo;
+		}
+		else if (duty_elevador < reposo_pitch){
+			duty_elevador += delta_servo;
+
+		}
+		break;
+	}
+
+	//GUIÑADA
+	switch(yaw){
+	case POSITIVO:
+		if (duty_timon < 2000){
+			duty_timon += delta_servo;
+		}
+		break;
+	case NEGATIVO:
+		if (duty_timon > 1000){
+			duty_timon -= delta_servo;
+		}
+		break;
+	case CENTRO:
+		if (duty_timon > reposo_yaw){
+			duty_timon -= delta_servo;
+		}
+		else if (duty_timon < reposo_yaw){
+			duty_timon += delta_servo;
+		}
+		break;
+	}
+
+	//ACTUALIZACION DE TODA LA INFORMACION
+	switch (modo_de_operacion){
+		case NO_ARMADO:
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, duty_aleron_izq);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, duty_aleron_der);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, 0);
+			break;
+		case ARMADO:
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, duty_aleron_izq);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, duty_aleron_der);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
+			break;
+		case TAKE_OFF:
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, reposo_roll_izq);   //LOS ALERONES PERMANECEN ESTATICOS Y UN POCO
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, reposo_roll_der);   //DEFLECTADOS PARA DAR MAYOR SUSTENTACION EN EL DESPEGUE
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
+			break;
+		case CRUISE:
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, duty_aleron_izq);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, duty_aleron_der);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
+			break;
+		case LANDING:
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, reposo_roll_izq);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, reposo_roll_der);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
+			break;
+		case FAIL_SAFE:
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, reposo_roll_izq);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, reposo_roll_der);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, reposo_pitch);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, reposo_yaw);
+			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
+			break;
+		default:
+			break;
+	}
+
 }
 
 void cambio_fsm (uint8_t tecla_oprimida){
 	switch (tecla_oprimida){
-	case 'a': case 'd': case'w': case's': case'l' : case'j':
-		superficie = tecla_oprimida;
+	case 'a':
+		roll = POSITIVO;
+		timeout_roll = HAL_GetTick();
+		break;
+	case 'd':
+		roll = NEGATIVO;
+		timeout_roll = HAL_GetTick();
+		break;
+	case'w':
+		pitch = POSITIVO;
+		timeout_pitch = HAL_GetTick();
+		break;
+	case's':
+		pitch = NEGATIVO;
+		timeout_pitch = HAL_GetTick();
+		break;
+	case'l' :
+		yaw = POSITIVO;
+		timeout_yaw = HAL_GetTick();
+		break;
+	case'j':
+		yaw = NEGATIVO;
+		timeout_yaw = HAL_GetTick();
 		break;
 
-	/*
-	 * p armed
-	 * o landing
-	 * i cruise
-	 * u take off
-	 * ' ' disarmed*/
+		/*
+		 * p armed
+		 * o landing
+		 * i cruise
+		 * u take off
+		 * ' ' disarmed*/
 
 	case 'p':
 		modo_de_operacion = ARMADO;
@@ -583,6 +756,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	if (htim->Instance == TIM3)
 	{
 		BANDERA_MOVIMIENTO = 1;
+
 	}
 }
 

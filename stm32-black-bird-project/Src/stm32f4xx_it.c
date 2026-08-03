@@ -11,7 +11,10 @@
 
 
 extern TIM_HandleTypeDef htim4;
-extern
+
+extern TIM_HandleTypeDef htim3;
+
+extern TIM_HandleTypeDef htim2;
 /*
  * SysTick: es la base de tiempo del HAL.
  * HAL_Delay() y todos los timeouts internos del HAL dependen de que
@@ -27,6 +30,15 @@ void TIM4_IRQHandler(void)
     HAL_TIM_IRQHandler(&htim4);
 }
 
+void TIM3_IRQHandler(void)
+{
+    HAL_TIM_IRQHandler(&htim3);
+}
+
+void TIM2_IRQHandler(void)
+{
+    HAL_TIM_IRQHandler(&htim2);
+}
 extern UART_HandleTypeDef huart2;
 
 void USART2_IRQHandler(void)
