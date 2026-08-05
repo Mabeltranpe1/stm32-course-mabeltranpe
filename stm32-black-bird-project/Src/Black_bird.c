@@ -51,7 +51,7 @@ int ang_roll, ang_pitch;
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
-UART_HandleTypeDef huart1;
+UART_HandleTypeDef huart2;
 I2C_HandleTypeDef hi2c;
 //HEADERS
 static void clk_Init(void);
@@ -218,7 +218,7 @@ void transmitir_datos(void){
 	//mpu6050_Read();
 	uint8_t msg_buffer[80] = {0};
 	len_msg = sprintf((char *)msg_buffer, "ROLL=%d PITCH=%d THROTTLE=%u \r\n", ang_roll, ang_pitch, duty_motor, nombres_modo[modo_de_operacion]);
-	HAL_UART_Transmit(&huart1, msg_buffer, len_msg, 100);
+	HAL_UART_Transmit(&huart2, msg_buffer, len_msg, 100);
 
 
 }
@@ -332,40 +332,40 @@ static void uart_Init(void){
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	//configuracion de PA2 para usarlo como UART
 
-	GPIO_InitTX.Pin   = GPIO_PIN_9;   //PIN de TX
+	GPIO_InitTX.Pin   = GPIO_PIN_2;   //PIN de TX
 	GPIO_InitTX.Mode  = GPIO_MODE_AF_PP;  //se establece que se va a usar una funcion alternativa
 	GPIO_InitTX.Pull  = GPIO_NOPULL;  //no es necesario tener un pull ya que eso esta controlado por el USART
 	GPIO_InitTX.Speed = GPIO_SPEED_FREQ_LOW;
-	GPIO_InitTX.Alternate = GPIO_AF7_USART1;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
+	GPIO_InitTX.Alternate = GPIO_AF7_USART2;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
 	//se carga la configuracion
 	HAL_GPIO_Init(GPIOA, &GPIO_InitTX);
 
 	//inicio del pin para RX, se va a usar Pa3 como se define en la tabla de funciones extra
 	GPIO_InitTypeDef GPIO_InitRX = {0};
-	GPIO_InitRX.Pin   = GPIO_PIN_10;       //PIN de RX
+	GPIO_InitRX.Pin   = GPIO_PIN_3;       //PIN de RX
 	GPIO_InitRX.Mode  = GPIO_MODE_AF_PP;
 	GPIO_InitRX.Pull  = GPIO_NOPULL;
 	GPIO_InitRX.Speed = GPIO_SPEED_FREQ_LOW;
-	GPIO_InitRX.Alternate = GPIO_AF7_USART1;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
+	GPIO_InitRX.Alternate = GPIO_AF7_USART2;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
 
 	HAL_GPIO_Init(GPIOA, &GPIO_InitRX);
 
-	__HAL_RCC_USART1_CLK_ENABLE();
+	__HAL_RCC_USART2_CLK_ENABLE();
 
-	huart1.Instance = USART1;
+	huart2.Instance = USART2;
 	/*config 19200 8N1 - 8 bit data, TX y RX */
-	huart1.Init.BaudRate = 19200;
-	huart1.Init.Mode = UART_MODE_TX_RX;  //SE ACTIVA EL MODO DE ENVIO Y RECEPCION DE DATOS
-	huart1.Init.Parity =  UART_PARITY_NONE;
-	huart1.Init.StopBits = UART_STOPBITS_1;
-	huart1.Init.WordLength = UART_WORDLENGTH_8B;
+	huart2.Init.BaudRate = 19200;
+	huart2.Init.Mode = UART_MODE_TX_RX;  //SE ACTIVA EL MODO DE ENVIO Y RECEPCION DE DATOS
+	huart2.Init.Parity =  UART_PARITY_NONE;
+	huart2.Init.StopBits = UART_STOPBITS_1;
+	huart2.Init.WordLength = UART_WORDLENGTH_8B;
 	/*Cargar la configuracion del UART2 en los FSR del MCU */
-	HAL_UART_Init(&huart1);
+	HAL_UART_Init(&huart2);
 	/*SE CARGA LA CONFIGURACION DE RX DEL UART, ADEMÁS SE ESTABLECE LA VARIABLE DONDE SE VA A ALMACENAR LA LETRA QUE MODIFICA EL PWM,
 	 * SE CONFIUGRA UN SIZE DE 1 YA QUE SOLO SE CONTROLA MEDIANTE UNA SOLA LETRA*/
-	HAL_UART_Receive_IT(&huart1, &RXchange, 1);
+	HAL_UART_Receive_IT(&huart2, &RXchange, 1);
 	/*CONFIGURACION DE LA INTERUPCION EN EL NVIC*/
-	HAL_NVIC_EnableIRQ(USART1_IRQn);
+	HAL_NVIC_EnableIRQ(USART2_IRQn);
 
 }
 
@@ -441,7 +441,7 @@ void mpu6050_Read (void){
 
 		if (x == 0 && y==0 && z==0){
 			char str[] = "sensor en modo sueño, Despertando.... \r\n";
-			HAL_UART_Transmit(&huart1,(uint8_t *)str, strlen(str), 100);
+			HAL_UART_Transmit(&huart2,(uint8_t *)str, strlen(str), 100);
 			mpu6050_Init();
 		}
 		else{
@@ -462,7 +462,7 @@ void mpu6050_Read (void){
 	else {
 		char err_msg[64];
 		int len = sprintf(err_msg, "Error I2C (status=%d). Reintentando...\r\n", status);
-		HAL_UART_Transmit(&huart1, (uint8_t *)err_msg, len, 100);
+		HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
 
 		// Si el bus I2C está bloqueado, se re-inicializa el periférico I2C1 de la STM32
 		if (status == HAL_BUSY) {
@@ -485,18 +485,18 @@ void bmp280_Read(void){
 	if (status == HAL_OK){
 		if (Rec_Data[1] == 0x58){
 			char msg[]="esta bien";
-			HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), 100);
+			HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
 		}
 		else {
 			char err_msg[64];
 			int len = sprintf(err_msg, "ID inesperado = 0x%02X \r\n",Rec_Data[0]);
-			HAL_UART_Transmit(&huart1, (uint8_t *)err_msg, len, 100);
+			HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
 		}
 	}
 	else {
 		char err_msg[64];
 		int len = sprintf(err_msg, "Error I2C (status=%d). Reintentando...\r\n", status);
-		HAL_UART_Transmit(&huart1, (uint8_t *)err_msg, len, 100);
+		HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
 
 		// Si el bus I2C está bloqueado, se re-inicializa el periférico I2C1 de la STM32
 		if (status == HAL_BUSY) {
@@ -809,7 +809,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef * huart){
-	if (huart->Instance == USART1){
+	if (huart->Instance == USART2){
 		dato_recibido = 1;  //SE ACTIVA UNA BANDERA PARA QUE LA LOGICA FUERTE SE EJECUTE DENTRO DEL MAIN Y NO EN LA INTERRUPCION
 		HAL_UART_Receive_IT(huart, &RXchange, 1);  //SE BAJA LA BANDERA ESPERANDO QUE HAYA UNA NUEVA INTERRUPCION
 	}
@@ -817,7 +817,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef * huart){
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart){
 
-	if (huart->Instance == USART1){          //
+	if (huart->Instance == USART2){          //
 
 		if (huart->ErrorCode  & HAL_UART_ERROR_ORE){
 			// subir contador de overrun
