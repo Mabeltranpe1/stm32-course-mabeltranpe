@@ -35,7 +35,7 @@ import serial
 #
 ENLACES = {
     'xbee':  ("/dev/ttyUSB0", 19200),    # XBee por adaptador FTDI
-    'cable': ("/dev/ttyACM0", 115200),   # VCP del ST-Link
+    'cable': ("/dev/ttyACM0", 19200),   # VCP del ST-Link
 }
 
 _arg = sys.argv[1] if len(sys.argv) > 1 else 'xbee'

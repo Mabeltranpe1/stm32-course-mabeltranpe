@@ -26,6 +26,12 @@
 #define PRESS_MSB_REG 0XF7
 #define PRESS_LSB_REG 0xF8
 #define PRESS_XLSB_REG 0xF9
+/*LOS COEFICIENTES DE CALIBRACION VIVEN DESDE 0x88 Y SON 24 BYTES SEGUIDOS.
+ * SON PROPIOS DE CADA UNIDAD Y SE LEEN UNA SOLA VEZ AL ARRANCAR*/
+#define BMP_CALIB_REG 0x88
+#define BMP_CTRL_MEAS_REG 0xF4
+/*0x2F = TEMPERATURA x1, PRESION x4, MODO NORMAL (MIDE SOLO Y SIN PARAR)*/
+#define BMP_CTRL_MEAS_VAL 0x2F
 
 #define RAD_TO_GRAD 57.2957795f
 
@@ -47,6 +53,20 @@ volatile uint8_t BANDERA_MOVIMIENTO = 0;
 int16_t Accel_X_raw, Accel_Y_raw, Accel_Z_raw;
 float Ax, Ay, Az;
 int ang_roll, ang_pitch;
+
+/*COEFICIENTES DE CALIBRACION DEL BMP280. SON PROPIOS DE CADA SENSOR Y SE LEEN
+ * UNA SOLA VEZ EN bmp280_Init(). SIN ELLOS LOS DATOS CRUDOS NO SIGNIFICAN NADA.
+ * OJO CON LOS TIPOS: EL DATASHEET DICE CUALES SON CON SIGNO Y CUALES NO*/
+uint16_t dig_T1, dig_P1;
+int16_t  dig_T2, dig_T3;
+int16_t  dig_P2, dig_P3, dig_P4, dig_P5, dig_P6, dig_P7, dig_P8, dig_P9;
+/*t_fine LO CALCULA LA COMPENSACION DE TEMPERATURA Y LO NECESITA LA DE PRESION,
+ * POR ESO LA TEMPERATURA SIEMPRE SE CALCULA PRIMERO*/
+int32_t t_fine;
+
+uint32_t presion_actual = 0;      //EN PASCALES
+uint32_t presion_referencia = 0;  //PRESION AL ARRANCAR, ES EL CERO DEL ALTIMETRO
+int altura_actual = 0;            //METROS SOBRE EL PUNTO DE ARRANQUE
 /*----typedef------*/
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim2;
@@ -61,6 +81,7 @@ static void uart_Init(void);
 void i2c_init(void);
 void mpu6050_Init(void);
 void mpu6050_Read (void);
+void bmp280_Init (void);
 void bmp280_Read (void);
 void modo_seteado (uint8_t modo_de_operacion);
 void movimiento(void);
@@ -105,10 +126,10 @@ uint32_t timeout_yaw = 0;
 uint32_t timeout_failsafe = 0;
 uint32_t tiempo_transmision_datos = 0;
 
-uint16_t reposo_roll_izq = 0;
-uint16_t reposo_roll_der = 0;
-uint16_t reposo_pitch = 0;
-uint16_t reposo_yaw = 0;
+uint16_t reposo_roll_izq = 1500;
+uint16_t reposo_roll_der = 1500;
+uint16_t reposo_pitch = 1500;
+uint16_t reposo_yaw = 1500;
 
 
 operacion modo_de_operacion = NO_ARMADO;
@@ -131,10 +152,10 @@ int main(void){
 	HAL_Init();
 	clk_Init();
 	ledok_Init();
+	i2c_init();
 	pwm_Init();
 	uart_Init();
-	i2c_init();
-	bmp280_Read();
+	bmp280_Init();
 	mpu6050_Init();
 	avion_Init();
 
@@ -215,9 +236,10 @@ void ledok_Init (void){
 }
 
 void transmitir_datos(void){
-	//mpu6050_Read();
-	uint8_t msg_buffer[80] = {0};
-	len_msg = sprintf((char *)msg_buffer, "ROLL=%d PITCH=%d THROTTLE=%u \r\n", ang_roll, ang_pitch, duty_motor, nombres_modo[modo_de_operacion]);
+	mpu6050_Read();
+	bmp280_Read();
+	uint8_t msg_buffer[100] = {0};
+	len_msg = sprintf((char *)msg_buffer, "ROLL=%d PITCH=%d ALT=%d THR=%u MODO_OPERACION=%s \r\n", ang_roll, ang_pitch, altura_actual, duty_motor, nombres_modo[modo_de_operacion]);
 	HAL_UART_Transmit(&huart2, msg_buffer, len_msg, 100);
 
 
@@ -308,13 +330,13 @@ void pwm_Init(void){
 
 	HAL_TIM_PWM_ConfigChannel(&htim3,&servos_Config,TIM_CHANNEL_1);
 	HAL_TIM_PWM_ConfigChannel(&htim3,&servos_Config,TIM_CHANNEL_2);
-	HAL_TIM_PWM_ConfigChannel(&htim3,&servos_Config,TIM_CHANNEL_3);
 	HAL_TIM_PWM_ConfigChannel(&htim3,&servos_Config,TIM_CHANNEL_4);
+	HAL_TIM_PWM_ConfigChannel(&htim3,&servos_Config,TIM_CHANNEL_3);
 	HAL_TIM_PWM_ConfigChannel(&htim2,&esc_Config,TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_2);
-	HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_3);
 	HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_4);
+	HAL_TIM_PWM_Start(&htim3,TIM_CHANNEL_3);
 	HAL_TIM_PWM_Start(&htim2,TIM_CHANNEL_1);
 	HAL_TIM_Base_Start_IT(&htim3);
 	HAL_NVIC_EnableIRQ(TIM3_IRQn);
@@ -475,35 +497,98 @@ void mpu6050_Read (void){
 	}
 }
 
+/*INICIALIZACION DEL BMP280. SE LLAMA UNA SOLA VEZ AL ARRANCAR:
+ * DESPIERTA EL SENSOR Y LEE SUS COEFICIENTES DE CALIBRACION*/
+void bmp280_Init(void){
+
+	uint8_t Rec_Data[24];
+	uint8_t Data;
+
+	/*MODO NORMAL: EL SENSOR MIDE SOLO Y SIN PARAR*/
+	Data = BMP_CTRL_MEAS_VAL;
+	HAL_I2C_Mem_Write(&hi2c, BMP_ADDR, BMP_CTRL_MEAS_REG, 1, &Data, 1, 100);
+
+	/*LOS 24 BYTES DE CALIBRACION DE UN SOLO TIRON, IGUAL QUE EN EL MPU*/
+	HAL_I2C_Mem_Read(&hi2c, BMP_ADDR, BMP_CALIB_REG, 1, Rec_Data, 24, 100);
+
+	/*OJO: LOS COEFICIENTES VIENEN CON EL BYTE BAJO PRIMERO, AL REVES QUE
+	 * LOS REGISTROS DE DATOS. POR ESO AQUI EL INDICE IMPAR VA DESPLAZADO*/
+	dig_T1 = (uint16_t)(Rec_Data[1] << 8 | Rec_Data[0]);
+	dig_T2 =  (int16_t)(Rec_Data[3] << 8 | Rec_Data[2]);
+	dig_T3 =  (int16_t)(Rec_Data[5] << 8 | Rec_Data[4]);
+	dig_P1 = (uint16_t)(Rec_Data[7] << 8 | Rec_Data[6]);
+	dig_P2 =  (int16_t)(Rec_Data[9] << 8 | Rec_Data[8]);
+	dig_P3 =  (int16_t)(Rec_Data[11] << 8 | Rec_Data[10]);
+	dig_P4 =  (int16_t)(Rec_Data[13] << 8 | Rec_Data[12]);
+	dig_P5 =  (int16_t)(Rec_Data[15] << 8 | Rec_Data[14]);
+	dig_P6 =  (int16_t)(Rec_Data[17] << 8 | Rec_Data[16]);
+	dig_P7 =  (int16_t)(Rec_Data[19] << 8 | Rec_Data[18]);
+	dig_P8 =  (int16_t)(Rec_Data[21] << 8 | Rec_Data[20]);
+	dig_P9 =  (int16_t)(Rec_Data[23] << 8 | Rec_Data[22]);
+}
+
+
+/*LECTURA DEL BMP280. LEE LOS 6 BYTES DE DATOS, APLICA LA COMPENSACION DEL
+ * DATASHEET Y CALCULA LA ALTURA SOBRE EL PUNTO DONDE SE ENCENDIO EL AVION*/
 void bmp280_Read(void){
 
-	uint8_t Rec_Data [0];
+	uint8_t Rec_Data[6];
 	HAL_StatusTypeDef status;
+	int32_t adc_P, adc_T;
+	int32_t var1, var2;
+	uint32_t p;
 
-	status = HAL_I2C_Mem_Read(&hi2c, BMP_ADDR, BMP_ID, 1, Rec_Data, 1 ,100 );
+	/*LOS 6 BYTES DE DATOS SEGUIDOS: PRESION (3) Y TEMPERATURA (3)*/
+	status = HAL_I2C_Mem_Read(&hi2c, BMP_ADDR, PRESS_MSB_REG, 1, Rec_Data, 6, 100);
 
-	if (status == HAL_OK){
-		if (Rec_Data[1] == 0x58){
-			char msg[]="esta bien";
-			HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
-		}
-		else {
-			char err_msg[64];
-			int len = sprintf(err_msg, "ID inesperado = 0x%02X \r\n",Rec_Data[0]);
-			HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
-		}
+	if (status != HAL_OK){
+		return;   //UNA LECTURA PERDIDA NO IMPORTA, SE REINTENTA EN LA SIGUIENTE
+	}
+
+	/*CADA MEDIDA SON 20 BITS REPARTIDOS EN 3 BYTES, CON EL MSB PRIMERO.
+	 * EL XLSB TRAE SUS 4 BITS EN LA PARTE ALTA, POR ESO SE DESPLAZA A LA DERECHA*/
+	adc_P = (int32_t)(((uint32_t)Rec_Data[0] << 12) | ((uint32_t)Rec_Data[1] << 4) | ((uint32_t)Rec_Data[2] >> 4));
+	adc_T = (int32_t)(((uint32_t)Rec_Data[3] << 12) | ((uint32_t)Rec_Data[4] << 4) | ((uint32_t)Rec_Data[5] >> 4));
+
+	/*COMPENSACION DE TEMPERATURA (FORMULA DEL DATASHEET).
+	 * VA PRIMERO PORQUE DEJA t_fine, QUE NECESITA LA DE PRESION*/
+	var1 = ((((adc_T >> 3) - ((int32_t)dig_T1 << 1))) * ((int32_t)dig_T2)) >> 11;
+	var2 = (((((adc_T >> 4) - ((int32_t)dig_T1)) * ((adc_T >> 4) - ((int32_t)dig_T1))) >> 12) * ((int32_t)dig_T3)) >> 14;
+	t_fine = var1 + var2;
+
+	/*COMPENSACION DE PRESION (FORMULA DEL DATASHEET)*/
+	var1 = (((int32_t)t_fine) >> 1) - (int32_t)64000;
+	var2 = (((var1 >> 2) * (var1 >> 2)) >> 11) * ((int32_t)dig_P6);
+	var2 = var2 + ((var1 * ((int32_t)dig_P5)) << 1);
+	var2 = (var2 >> 2) + (((int32_t)dig_P4) << 16);
+	var1 = (((dig_P3 * (((var1 >> 2) * (var1 >> 2)) >> 13)) >> 3) + ((((int32_t)dig_P2) * var1) >> 1)) >> 18;
+	var1 = ((((32768 + var1)) * ((int32_t)dig_P1)) >> 15);
+
+	if (var1 == 0){
+		return;   //EVITA LA DIVISION POR CERO
+	}
+
+	p = (((uint32_t)(((int32_t)1048576) - adc_P) - (var2 >> 12))) * 3125;
+
+	if (p < 0x80000000){
+		p = (p << 1) / ((uint32_t)var1);
 	}
 	else {
-		char err_msg[64];
-		int len = sprintf(err_msg, "Error I2C (status=%d). Reintentando...\r\n", status);
-		HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
-
-		// Si el bus I2C está bloqueado, se re-inicializa el periférico I2C1 de la STM32
-		if (status == HAL_BUSY) {
-			HAL_I2C_DeInit(&hi2c);
-			HAL_I2C_Init(&hi2c);
-		}
+		p = (p / (uint32_t)var1) * 2;
 	}
+
+	var1 = (((int32_t)dig_P9) * ((int32_t)(((p >> 3) * (p >> 3)) >> 13))) >> 12;
+	var2 = (((int32_t)(p >> 2)) * ((int32_t)dig_P8)) >> 13;
+	presion_actual = (uint32_t)((int32_t)p + ((var1 + var2 + dig_P7) >> 4));
+
+	/*LA PRIMERA MEDIDA BUENA SE GUARDA COMO REFERENCIA: ES EL CERO DEL ALTIMETRO.
+	 * ASI LA ALTURA QUE REPORTAMOS ES SOBRE EL PUNTO DE DESPEGUE, QUE ES LA UTIL*/
+	if (presion_referencia == 0){
+		presion_referencia = presion_actual;
+	}
+
+	/*FORMULA BAROMETRICA: ALTURA A PARTIR DE LA RELACION DE PRESIONES*/
+	altura_actual = (int)(44330.0f * (1.0f - powf((float)presion_actual / (float)presion_referencia, 0.1903f)));
 }
 
 void avion_Init(void){
@@ -569,6 +654,10 @@ void movimiento(void){
 	 * QUEREMOS EVITAR QUE AL PASAR DE UN ESTADO QUE TIENE LA POSICION DE LOS CONTROLES FIJOS A UN ESTADO QUE PERMITE CAMBIARLOS
 	 * PARTA DE UN ESTADO INICIAL CENTRAL. DE ESTA MANERA LAS TRANSICIONES NO SON BRUSCAS.
 	 * LOS ESTADOS DE REPOSO TIENEN LIJERAS DEFLECTACIONES PARA PERMITIR QUE EL ALA SUSTENTE MAS A MAS BAJA VELOCIDAD*/
+	reposo_roll_izq = 1500;
+	reposo_roll_der = 1500;
+	reposo_pitch    = 1500;
+	reposo_yaw      = 1500;
 	switch (modo_de_operacion){
 	case NO_ARMADO:
 		reposo_pitch = 1500;
@@ -676,10 +765,16 @@ void movimiento(void){
 		break;
 	case CENTRO:
 		if (duty_timon > reposo_yaw){
-			duty_timon -= delta_servo;
+			if (duty_timon - reposo_yaw <= delta_servo)
+				duty_timon = reposo_yaw;
+			else
+				duty_timon -= delta_servo;
 		}
 		else if (duty_timon < reposo_yaw){
-			duty_timon += delta_servo;
+			if (reposo_yaw - duty_timon <= delta_servo)
+				duty_timon = reposo_yaw;
+			else
+				duty_timon += delta_servo;
 		}
 		break;
 	}
@@ -689,43 +784,43 @@ void movimiento(void){
 		case NO_ARMADO:
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, duty_aleron_izq);
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, duty_aleron_der);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_timon);
 			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
 			break;
 		case ARMADO:
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, duty_aleron_izq);
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, duty_aleron_der);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_timon);
 			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
 			break;
 		case TAKE_OFF:
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, reposo_roll_izq);   //LOS ALERONES PERMANECEN ESTATICOS Y UN POCO
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, reposo_roll_der);   //DEFLECTADOS PARA DAR MAYOR SUSTENTACION EN EL DESPEGUE
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_timon);
 			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
 			break;
 		case CRUISE:
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, duty_aleron_izq);
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, duty_aleron_der);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_timon);
 			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
 			break;
 		case LANDING:
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, reposo_roll_izq);
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, reposo_roll_der);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_elevador);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_timon);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, duty_elevador);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, duty_timon);
 			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
 			break;
 		case FAIL_SAFE:
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1, reposo_roll_izq);
 			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2, reposo_roll_der);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, reposo_pitch);
-			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, reposo_yaw);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_4, reposo_pitch);
+			__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_3, reposo_yaw);
 			__HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_1, duty_motor);
 			break;
 		default:
