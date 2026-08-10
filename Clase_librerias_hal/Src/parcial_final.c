@@ -251,6 +251,7 @@ int main(void){
 	i2c_init();
 	SSD1306_Init();
 	mpu6050_Init();
+	mpu6050_Read();
 
 
 	while(1){

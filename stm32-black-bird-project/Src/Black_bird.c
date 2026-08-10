@@ -43,6 +43,7 @@ uint16_t duty_motor = 0;
 
 uint8_t tipo_tecla_oprimida = 0; //variable para definir que ha llegado por serial y a que maquina de estados debe entrar
 uint16_t delta_servo = 0;
+uint16_t delta_motor = 0;
 
 
 uint16_t duty_esc = 1000;
@@ -71,23 +72,9 @@ int altura_actual = 0;            //METROS SOBRE EL PUNTO DE ARRANQUE
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
-UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart1;
 I2C_HandleTypeDef hi2c;
-//HEADERS
-static void clk_Init(void);
-void ledok_Init(void);
-void pwm_Init(void);
-static void uart_Init(void);
-void i2c_init(void);
-void mpu6050_Init(void);
-void mpu6050_Read (void);
-void bmp280_Init (void);
-void bmp280_Read (void);
-void modo_seteado (uint8_t modo_de_operacion);
-void movimiento(void);
-void avion_Init(void);
-void cambio_fsm(uint8_t tecla_oprimida);
-void transmitir_datos(void);
+
 //ESTADOS
 //
 typedef enum {
@@ -130,6 +117,7 @@ uint16_t reposo_roll_izq = 1500;
 uint16_t reposo_roll_der = 1500;
 uint16_t reposo_pitch = 1500;
 uint16_t reposo_yaw = 1500;
+uint16_t reposo_motor = 1000;
 
 
 operacion modo_de_operacion = NO_ARMADO;
@@ -145,6 +133,22 @@ const char *throttle[] = {
 };
 
 int len_msg = 0;
+
+//HEADERS
+static void clk_Init(void);
+void ledok_Init(void);
+void pwm_Init(void);
+static void uart_Init(void);
+void i2c_init(void);
+void mpu6050_Init(void);
+void mpu6050_Read (void);
+void bmp280_Init (void);
+void bmp280_Read (void);
+void modo_seteado (uint8_t modo_de_operacion);
+void movimiento(void);
+void avion_Init(void);
+void cambio_fsm(uint8_t tecla_oprimida);
+void transmitir_datos(void);
 //MAIN
 
 int main(void){
@@ -164,7 +168,7 @@ int main(void){
 		if (dato_recibido == 1){
 			dato_recibido = 0;
 			timeout_failsafe = HAL_GetTick();
-			cambio_fsm(RXchange);
+			cambi+o_fsm(RXchange);
 			modo_seteado(modo_de_operacion);
 		}
 		if (BANDERA_MOVIMIENTO == 1){
@@ -176,6 +180,7 @@ int main(void){
 			transmitir_datos();
 			tiempo_transmision_datos = HAL_GetTick();
 		}
+
 
 
 
@@ -239,8 +244,8 @@ void transmitir_datos(void){
 	mpu6050_Read();
 	bmp280_Read();
 	uint8_t msg_buffer[100] = {0};
-	len_msg = sprintf((char *)msg_buffer, "ROLL=%d PITCH=%d ALT=%d THR=%u MODO_OPERACION=%s \r\n", ang_roll, ang_pitch, altura_actual, duty_motor, nombres_modo[modo_de_operacion]);
-	HAL_UART_Transmit(&huart2, msg_buffer, len_msg, 100);
+	len_msg = sprintf((char *)msg_buffer, "ROLL=%ddeg PITCH=%ddeg ALT=%dm THR=%uus MODO_OPERACION=%s \r\n", ang_roll, ang_pitch, altura_actual, duty_motor, nombres_modo[modo_de_operacion]);
+	HAL_UART_Transmit(&huart1, msg_buffer, len_msg, 100);
 
 
 }
@@ -354,40 +359,40 @@ static void uart_Init(void){
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	//configuracion de PA2 para usarlo como UART
 
-	GPIO_InitTX.Pin   = GPIO_PIN_2;   //PIN de TX
+	GPIO_InitTX.Pin   = GPIO_PIN_9;   //PIN de TX
 	GPIO_InitTX.Mode  = GPIO_MODE_AF_PP;  //se establece que se va a usar una funcion alternativa
 	GPIO_InitTX.Pull  = GPIO_NOPULL;  //no es necesario tener un pull ya que eso esta controlado por el USART
 	GPIO_InitTX.Speed = GPIO_SPEED_FREQ_LOW;
-	GPIO_InitTX.Alternate = GPIO_AF7_USART2;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
+	GPIO_InitTX.Alternate = GPIO_AF7_USART1;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
 	//se carga la configuracion
 	HAL_GPIO_Init(GPIOA, &GPIO_InitTX);
 
 	//inicio del pin para RX, se va a usar Pa3 como se define en la tabla de funciones extra
 	GPIO_InitTypeDef GPIO_InitRX = {0};
-	GPIO_InitRX.Pin   = GPIO_PIN_3;       //PIN de RX
+	GPIO_InitRX.Pin   = GPIO_PIN_10;       //PIN de RX
 	GPIO_InitRX.Mode  = GPIO_MODE_AF_PP;
 	GPIO_InitRX.Pull  = GPIO_NOPULL;
 	GPIO_InitRX.Speed = GPIO_SPEED_FREQ_LOW;
-	GPIO_InitRX.Alternate = GPIO_AF7_USART2;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
+	GPIO_InitRX.Alternate = GPIO_AF7_USART1;  //se configura el uso de la funcion alternatica correspondeitne a AF07, o sea USART1
 
 	HAL_GPIO_Init(GPIOA, &GPIO_InitRX);
 
-	__HAL_RCC_USART2_CLK_ENABLE();
+	__HAL_RCC_USART1_CLK_ENABLE();
 
-	huart2.Instance = USART2;
+	huart1.Instance = USART1;
 	/*config 19200 8N1 - 8 bit data, TX y RX */
-	huart2.Init.BaudRate = 19200;
-	huart2.Init.Mode = UART_MODE_TX_RX;  //SE ACTIVA EL MODO DE ENVIO Y RECEPCION DE DATOS
-	huart2.Init.Parity =  UART_PARITY_NONE;
-	huart2.Init.StopBits = UART_STOPBITS_1;
-	huart2.Init.WordLength = UART_WORDLENGTH_8B;
+	huart1.Init.BaudRate = 115200;
+	huart1.Init.Mode = UART_MODE_TX_RX;  //SE ACTIVA EL MODO DE ENVIO Y RECEPCION DE DATOS
+	huart1.Init.Parity =  UART_PARITY_NONE;
+	huart1.Init.StopBits = UART_STOPBITS_1;
+	huart1.Init.WordLength = UART_WORDLENGTH_8B;
 	/*Cargar la configuracion del UART2 en los FSR del MCU */
-	HAL_UART_Init(&huart2);
+	HAL_UART_Init(&huart1);
 	/*SE CARGA LA CONFIGURACION DE RX DEL UART, ADEMÁS SE ESTABLECE LA VARIABLE DONDE SE VA A ALMACENAR LA LETRA QUE MODIFICA EL PWM,
 	 * SE CONFIUGRA UN SIZE DE 1 YA QUE SOLO SE CONTROLA MEDIANTE UNA SOLA LETRA*/
-	HAL_UART_Receive_IT(&huart2, &RXchange, 1);
+	HAL_UART_Receive_IT(&huart1, &RXchange, 1);
 	/*CONFIGURACION DE LA INTERUPCION EN EL NVIC*/
-	HAL_NVIC_EnableIRQ(USART2_IRQn);
+	HAL_NVIC_EnableIRQ(USART1_IRQn);
 
 }
 
@@ -463,7 +468,7 @@ void mpu6050_Read (void){
 
 		if (x == 0 && y==0 && z==0){
 			char str[] = "sensor en modo sueño, Despertando.... \r\n";
-			HAL_UART_Transmit(&huart2,(uint8_t *)str, strlen(str), 100);
+			HAL_UART_Transmit(&huart1,(uint8_t *)str, strlen(str), 100);
 			mpu6050_Init();
 		}
 		else{
@@ -476,15 +481,15 @@ void mpu6050_Read (void){
 			Az = Accel_Z_raw / 16384.0;
 
 			//DESEO ENTREGAR LOS RESULTADOS EN GRADOS, POR LO QUE DEBO HACER CONVERSION.
-			ang_roll = (int)(atan2(Ay, Az) * RAD_TO_GRAD);
-			ang_pitch = (int)(atan2(-Ax , sqrt(pow(Ay,2) + pow(Az,2))) * RAD_TO_GRAD);
+			ang_roll = (int)(atan2(-Ax , sqrt(pow(Ay,2) + pow(-Az,2))) * RAD_TO_GRAD);
+			ang_pitch =  (int)(atan2(Ay, -Az) * RAD_TO_GRAD);
 
 		}
 	}
 	else {
 		char err_msg[64];
 		int len = sprintf(err_msg, "Error I2C (status=%d). Reintentando...\r\n", status);
-		HAL_UART_Transmit(&huart2, (uint8_t *)err_msg, len, 100);
+		HAL_UART_Transmit(&huart1, (uint8_t *)err_msg, len, 100);
 
 		// Si el bus I2C está bloqueado, se re-inicializa el periférico I2C1 de la STM32
 		if (status == HAL_BUSY) {
@@ -601,33 +606,39 @@ void modo_seteado(uint8_t modo_de_operacion){
 	switch(modo_de_operacion){
 	case NO_ARMADO:
 		delta_servo = 50;
-		duty_motor = 1000;
+		reposo_motor = 1000;
 		tipo_tecla_oprimida = 0;
+		delta_motor = 50;
 		break;
 	case ARMADO:
 		tipo_tecla_oprimida = 0;
 		delta_servo = 50;
-		duty_motor = 1000;
+		reposo_motor = 1000;
+		delta_motor = 50;
 		break;
 	case TAKE_OFF:
 		delta_servo = 50;
-		duty_motor = 2000;
+		reposo_motor = 2000;
 		tipo_tecla_oprimida = 0;
+		delta_motor = 20;
 		break;
 	case CRUISE:
 		delta_servo = 20;
-		duty_motor = 1550;
+		reposo_motor = 1550;
 		tipo_tecla_oprimida = 0;
+		delta_motor = 20;
 		break;
 	case LANDING:
 		delta_servo = 25;
-		duty_motor = 1200;
+		reposo_motor = 1200;
 		tipo_tecla_oprimida = 0;
+		delta_motor = 25;
 		break;
 	case FAIL_SAFE:
 		delta_servo = 20;
-		duty_motor = 1000;
+		reposo_motor = 1000;
 		tipo_tecla_oprimida = 0;
+		delta_motor = 0;
 		break;
 	default:
 		break;
@@ -643,11 +654,12 @@ void movimiento(void){
 			roll = CENTRO;
 	}
 	if (HAL_GetTick() -timeout_yaw > 150){
-			yaw = CENTRO;
+		yaw = CENTRO;
 	}
 	if (HAL_GetTick() - timeout_failsafe > 8000){
 		modo_de_operacion = FAIL_SAFE;
 	}
+
 
 	/*EN QUE CASO SE HABILITA O DESHABILITA ALGO?
 	 * CUANDO SE SETEA UNO DE LOS EJES A CENTRO ES PORQUE
@@ -658,35 +670,62 @@ void movimiento(void){
 	reposo_roll_der = 1500;
 	reposo_pitch    = 1500;
 	reposo_yaw      = 1500;
+
 	switch (modo_de_operacion){
 	case NO_ARMADO:
 		reposo_pitch = 1500;
 		reposo_roll_der = 1500;
 		reposo_roll_izq = 1500;
 		reposo_yaw = 1500;
+		duty_motor = 1000;   //PARADA DE EMERGENCIA
+
 		break;
 	case ARMADO:
 		reposo_pitch = 1500;
 		reposo_roll_der = 1500;
 		reposo_roll_izq = 1500;
 		reposo_yaw = 1500;
+		if (duty_motor > reposo_motor){
+			duty_motor -= delta_motor;
+		}
 		break;
 	case TAKE_OFF:
 		roll = CENTRO;
 		reposo_roll_izq = 1700;
 		reposo_roll_der = 1300;
+		if (duty_motor < reposo_motor){
+			duty_motor += reposo_motor;
+		}
+		else if (duty_motor > reposo_motor){
+			duty_motor -= delta_motor;
+		}
 		break;
 	case CRUISE:
 		reposo_pitch = 1500;
 		reposo_roll_der = 1500;
 		reposo_roll_izq = 1500;
 		reposo_yaw = 1500;
+		if (duty_motor < reposo_motor){
+			duty_motor += delta_motor;
+		}
+		else if (duty_motor > reposo_motor){
+			duty_motor -= delta_motor;
+		}
+
 		break;
 	case LANDING:
 		roll = CENTRO;
 		reposo_roll_izq = 1700;
 		reposo_roll_der = 1300;
+
+		if (duty_motor < reposo_motor){
+			duty_motor += delta_motor;
+		}
+		else if (duty_motor > reposo_motor){
+			duty_motor -= delta_motor;
+		}
 		break;
+
 
 	case FAIL_SAFE:
 		roll = CENTRO;
@@ -696,6 +735,13 @@ void movimiento(void){
 		reposo_roll_der = 1500;
 		reposo_roll_izq = 1500;
 		reposo_yaw = 1500;
+
+		if (duty_motor < reposo_motor){
+			duty_motor += delta_motor;
+		}
+		else if (duty_motor > reposo_motor){
+			duty_motor -= delta_motor;
+		}
 		break;
 	default:
 		break;
@@ -904,7 +950,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef * huart){
-	if (huart->Instance == USART2){
+	if (huart->Instance == USART1){
 		dato_recibido = 1;  //SE ACTIVA UNA BANDERA PARA QUE LA LOGICA FUERTE SE EJECUTE DENTRO DEL MAIN Y NO EN LA INTERRUPCION
 		HAL_UART_Receive_IT(huart, &RXchange, 1);  //SE BAJA LA BANDERA ESPERANDO QUE HAYA UNA NUEVA INTERRUPCION
 	}
@@ -912,7 +958,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef * huart){
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart){
 
-	if (huart->Instance == USART2){          //
+	if (huart->Instance == USART1){          //
 
 		if (huart->ErrorCode  & HAL_UART_ERROR_ORE){
 			// subir contador de overrun
